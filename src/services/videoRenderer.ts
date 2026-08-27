@@ -44,21 +44,35 @@ export async function renderFinalVideo(
       // Video dimensions - default vertical 1080x1920 or matched aspect
       const width = video.videoWidth || 1080;
       const height = video.videoHeight || 1920;
-      const duration = video.duration || 10;
+      const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 10;
 
       onProgress?.(15, 'กำลังถอดรหัสคลื่นเสียงพากย์ (PCM Audio Decoding)...');
 
-      // 2. Decode Audio directly into 48kHz Web Audio Buffer (guarantees crystal-clear lossless audio)
+      // 2. Decode Audio - ใช้ sampleRate ปกติบนมือถือ (iOS ไม่รองรับ 48kHz แบบบังคับ)
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const audioContext = new AudioContextClass({ sampleRate: 48000 });
+      const audioContext = isMobile ? new AudioContextClass() : new AudioContextClass({ sampleRate: 48000 });
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
       }
 
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      const audioDuration = audioBuffer.duration || duration;
-      const finalDuration = Math.max(duration, audioDuration);
+      let audioBuffer: AudioBuffer;
+      let audioDuration: number;
+      try {
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+        audioDuration = audioBuffer.duration || duration;
+      } catch (e) {
+        console.warn('decodeAudioData failed on mobile, fallback to element duration', e);
+        audioDuration = await getVideoRendererAudioDuration(audioBlob).catch(() => duration);
+        // สร้าง buffer เปล่าเพื่อยังต่อสายได้ แต่ใช้เวลาจาก element แทน
+        const silentLen = Math.ceil(audioDuration * audioContext.sampleRate);
+        audioBuffer = audioContext.createBuffer(1, Math.max(1, silentLen), audioContext.sampleRate);
+      }
+      // กันกรณีคำนวณพลาดบนมือถือแล้วได้ 1 วิ — ใช้ wordTimings หรือ duration จริงแทน
+      const timingsDuration = wordTimings.length ? Math.max(...wordTimings.map(t => t.end)) : 0;
+      const estimatedDuration = Math.max(duration, audioDuration, timingsDuration, 4);
+      const finalDuration = estimatedDuration;
 
       const audioDestination = audioContext.createMediaStreamDestination();
       const bufferSource = audioContext.createBufferSource();
@@ -72,29 +86,39 @@ export async function renderFinalVideo(
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
 
-      // 4. Capture Stream and MediaRecorder (บังคับ MP4 ก่อนตามที่ผู้ใช้ต้องการ)
-      const canvasStream = canvas.captureStream(30); // 30 FPS
+      // 4. Capture Stream and MediaRecorder (บังคับ MP4 ก่อน แต่ตรวจบนมือถือจริง)
+      // บน iOS Safari มีแค่ MP4, บน Android Chrome มีทั้งคู่ — ต้องเลือกอันที่รองรับจริง
+      let canvasStream: MediaStream;
+      try {
+        canvasStream = (canvas as any).captureStream ? canvas.captureStream(30) : (canvas as any).captureStream(30);
+        if (!canvasStream || canvasStream.getVideoTracks().length === 0) throw new Error('no canvas track');
+      } catch (e) {
+        console.warn('canvas.captureStream failed, fallback to video capture', e);
+        const videoStream = (video as any).captureStream ? (video as any).captureStream(30) : null;
+        if (videoStream) canvasStream = videoStream;
+        else throw new Error('เบราว์เซอร์มือถือนี้ไม่รองรับการอัดวิดีโอจาก Canvas');
+      }
       const combinedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...audioDestination.stream.getAudioTracks()
       ]);
 
-      // ลำดับความสำคัญ: MP4 (H.264/AAC) ก่อน เพื่อให้ไฟล์ .mp4 เล่นได้ทุกเครื่อง — Chrome/Edge รองรับ
-      let mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
-      if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1,mp4a.40.2')) {
+      // ลำดับความสำคัญ: MP4 (H.264/AAC) ก่อน เพื่อให้ไฟล์ .mp4 เล่นได้ทุกเครื่อง
+      // ตรวจแบบเข้มบนมือถือ — บางเครื่องอ้างว่ารองรับแต่จริงอัดไม่ได้ ต้องลองจริง
+      const candidates = [
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4;codecs=avc1',
+        'video/mp4',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm'
+      ];
+      let mimeType = candidates.find(t => {
+        try { return (window as any).MediaRecorder && MediaRecorder.isTypeSupported(t); } catch { return false; }
+      }) || 'video/mp4;codecs=avc1,mp4a.40.2';
+      // บน iOS ถ้าเลือก webm จะอัดไม่ได้ ให้บังคับ mp4
+      if (isMobile && mimeType.includes('webm') && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
         mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
-      } else if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) {
-        mimeType = 'video/mp4;codecs=avc1';
-      } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-        mimeType = 'video/mp4';
-      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
-        mimeType = 'video/webm;codecs=vp9,opus';
-      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
-        mimeType = 'video/webm;codecs=vp8,opus';
-      } else if (MediaRecorder.isTypeSupported('video/webm')) {
-        mimeType = 'video/webm';
-      } else {
-        mimeType = 'video/mp4;codecs=avc1,mp4a.40.2'; // fallback พยายาม MP4 ก่อน
       }
 
       const recorder = new MediaRecorder(combinedStream, {
@@ -425,4 +449,15 @@ function joinSubtitleItems(items: string[]): string {
     const thaiBoundary = /[\u0E00-\u0E7F]$/.test(previousPlain) && /^[\u0E00-\u0E7F]/.test(currentPlain);
     return `${thaiBoundary ? '' : ' '}${item}`;
   }).join('');
+}
+
+function getVideoRendererAudioDuration(blob: Blob): Promise<number> {
+  return new Promise((resolve) => {
+    const audio = document.createElement('audio');
+    audio.src = URL.createObjectURL(blob);
+    audio.addEventListener('loadedmetadata', () => resolve(audio.duration || 10));
+    audio.addEventListener('error', () => resolve(10));
+    // timeout fallback
+    setTimeout(() => resolve(10), 3000);
+  });
 }

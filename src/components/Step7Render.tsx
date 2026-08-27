@@ -126,10 +126,27 @@ export const Step7Render: React.FC<Step7RenderProps> = ({
     }
   };
 
-  const handleDownloadVideo = () => {
+  const handleDownloadVideo = async () => {
     if (!project.renderedVideoUrl) return;
-    // บังคับดาวน์โหลดเป็น .mp4 เสมอตามที่ผู้ใช้ต้องการ (เรนเดอร์ตอนนี้บังคับ mime เป็น video/mp4 แล้ว)
     const fileName = `${project.title || 'review_video'}_final.mp4`;
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+    // บนมือถือบางรุ่น <a download> ถูกบล็อก ให้ใช้ share API หรือเปิดแท็บใหม่
+    if (isMobile && (navigator as any).share && project.renderedVideoBlob) {
+      try {
+        const file = new File([project.renderedVideoBlob], fileName, { type: project.renderedVideoBlob.type || 'video/mp4' });
+        if ((navigator as any).canShare && (navigator as any).canShare({ files: [file] })) {
+          await (navigator as any).share({ files: [file], title: project.title || 'ReviewVideo' });
+          onNotify('success', 'แชร์วิดีโอสำเร็จ', fileName);
+          return;
+        }
+      } catch {}
+    }
+    // Fallback: เปิดแท็บใหม่บน iOS หรือดาวน์โหลดปกติ
+    if (isMobile && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      window.open(project.renderedVideoUrl, '_blank');
+      onNotify('info', 'เปิดวิดีโอในแท็บใหม่', 'กดค้างที่วิดีโอ → บันทึกไปยังรูปภาพ');
+      return;
+    }
     const a = document.createElement('a');
     a.href = project.renderedVideoUrl;
     a.download = fileName;
