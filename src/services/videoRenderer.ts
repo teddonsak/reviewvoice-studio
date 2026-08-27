@@ -34,7 +34,21 @@ export async function renderFinalVideo(
       video.src = videoSourceUrl;
       video.muted = true; // ลบเสียงเดิมของวิดีโอต้นฉบับ
       video.playsInline = true;
+      (video as any).playsInline = true;
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
       video.loop = true; // วนคลิปต้นฉบับอัตโนมัติเมื่อเสียงพากย์ยาวกว่า
+      // บนมือถือต้องอยู่ใน DOM ถึงจะเล่นและ capture ได้
+      const isMobileEarly = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+      if (isMobileEarly) {
+        video.style.position = 'fixed';
+        video.style.left = '-9999px';
+        video.style.top = '-9999px';
+        video.style.width = '1px';
+        video.style.height = '1px';
+        document.body.appendChild(video);
+        (video as any)._wasInDom = true;
+      }
 
       await new Promise<void>((res, rej) => {
         video.onloadedmetadata = () => res();
@@ -42,9 +56,17 @@ export async function renderFinalVideo(
       });
 
       // Video dimensions - default vertical 1080x1920 or matched aspect
+      // บนมือถือบางรุ่น videoWidth/Height เป็น 0 จนกว่าจะเล่นเฟรมแรก — รอให้พร้อม
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        await new Promise<void>(res => {
+          const onCanPlay = () => { video.removeEventListener('canplay', onCanPlay); res(); };
+          video.addEventListener('canplay', onCanPlay);
+          setTimeout(() => res(), 800);
+        });
+      }
       const width = video.videoWidth || 1080;
       const height = video.videoHeight || 1920;
-      const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 10;
+      const duration = isFinite(video.duration) && video.duration > 0 && video.duration < 600 ? video.duration : 10;
 
       onProgress?.(15, 'กำลังถอดรหัสคลื่นเสียงพากย์ (PCM Audio Decoding)...');
 
@@ -79,10 +101,14 @@ export async function renderFinalVideo(
       bufferSource.buffer = audioBuffer;
       bufferSource.connect(audioDestination);
 
-      // 3. Canvas setup
+      // 3. Canvas setup - บนมือถือต้องอยู่ใน DOM ถึงจะ capture ได้
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
+      canvas.style.position = 'fixed';
+      canvas.style.left = '-9999px';
+      canvas.style.top = '-9999px';
+      document.body.appendChild(canvas);
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
 
@@ -134,7 +160,9 @@ export async function renderFinalVideo(
 
       recorder.onstop = () => {
         try { bufferSource.stop(); } catch {}
-        audioContext.close().catch(() => {});
+        try { audioContext.close().catch(() => {}); } catch {}
+        try { document.body.removeChild(canvas); } catch {}
+        try { if ((video as any)._wasInDom) document.body.removeChild(video); } catch {}
 
         const finalBlob = new Blob(recordedChunks, { type: mimeType });
         const videoUrl = URL.createObjectURL(finalBlob);
