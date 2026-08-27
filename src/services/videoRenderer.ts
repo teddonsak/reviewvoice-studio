@@ -128,12 +128,40 @@ async function renderWithMediabunny(
   const timingsDuration = wordTimings.length ? Math.max(...wordTimings.map(t => t.end)) : 0;
   const finalDuration = Math.max(audioBuffer.duration || sourceDuration, timingsDuration, sourceDuration, 3);
 
+  // Pre-warm video and ensure first frame is decoded
+  try {
+    video.currentTime = 0;
+    await new Promise<void>((resolve) => {
+      if (video.readyState >= 3) {
+        resolve();
+      } else {
+        const onReady = () => {
+          video.removeEventListener('canplay', onReady);
+          resolve();
+        };
+        video.addEventListener('canplay', onReady);
+        setTimeout(resolve, 600);
+      }
+    });
+    await video.play().catch(() => {});
+    video.pause();
+    await seekVideoTo(video, 0);
+  } catch {}
+
   // 3. Setup Canvas
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
+
+  // Initial draw first frame onto canvas to guarantee non-empty frame
+  if (video.readyState >= 2) {
+    ctx.drawImage(video, 0, 0, width, height);
+  } else {
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, width, height);
+  }
 
   // 4. Setup Mediabunny Output
   const target = new BufferTarget();
@@ -170,15 +198,11 @@ async function renderWithMediabunny(
     const currentTime = i * frameDuration;
     const seekTime = currentTime % sourceDuration;
 
-    video.currentTime = seekTime;
-    await waitForVideoSeek(video);
+    await seekVideoTo(video, seekTime);
 
-    // Draw video frame onto canvas
+    // Draw video frame onto canvas (retain last valid frame if temporarily not ready, never flash black)
     if (video.readyState >= 2) {
       ctx.drawImage(video, 0, 0, width, height);
-    } else {
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, width, height);
     }
 
     // Draw Burned-in Subtitles onto canvas
@@ -397,9 +421,6 @@ async function renderWithMediaRecorder(
 
         if (video.readyState >= 2) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        } else {
-          ctx.fillStyle = '#000';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
         drawKaraokeSubtitles(ctx, elapsed, wordTimings, subtitleSettings, canvas.width, canvas.height);
@@ -420,21 +441,32 @@ async function renderWithMediaRecorder(
   });
 }
 
-function waitForVideoSeek(video: HTMLVideoElement): Promise<void> {
+function seekVideoTo(video: HTMLVideoElement, targetTime: number): Promise<void> {
   return new Promise((resolve) => {
-    if (video.seeking) {
-      const onSeeked = () => {
-        video.removeEventListener('seeked', onSeeked);
-        resolve();
-      };
-      video.addEventListener('seeked', onSeeked);
-      setTimeout(() => {
-        video.removeEventListener('seeked', onSeeked);
-        resolve();
-      }, 150);
-    } else {
+    if (Math.abs(video.currentTime - targetTime) < 0.001 && !video.seeking && video.readyState >= 2) {
       resolve();
+      return;
     }
+
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        video.removeEventListener('seeked', finish);
+        video.removeEventListener('error', finish);
+        if ('requestVideoFrameCallback' in video) {
+          (video as any).requestVideoFrameCallback(() => resolve());
+        } else {
+          resolve();
+        }
+      }
+    };
+
+    video.addEventListener('seeked', finish, { once: true });
+    video.addEventListener('error', finish, { once: true });
+    video.currentTime = targetTime;
+
+    setTimeout(finish, 200);
   });
 }
 
