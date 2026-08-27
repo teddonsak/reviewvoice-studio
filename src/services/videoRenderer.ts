@@ -128,25 +128,22 @@ async function renderWithMediabunny(
   const timingsDuration = wordTimings.length ? Math.max(...wordTimings.map(t => t.end)) : 0;
   const finalDuration = Math.max(audioBuffer.duration || sourceDuration, timingsDuration, sourceDuration, 3);
 
-  // Pre-warm video and ensure first frame is decoded
+  // Pre-warm video first frame safely
   try {
     video.currentTime = 0;
-    await new Promise<void>((resolve) => {
-      if (video.readyState >= 3) {
-        resolve();
-      } else {
+    if (video.readyState < 2) {
+      await new Promise<void>((resolve) => {
         const onReady = () => {
           video.removeEventListener('canplay', onReady);
           resolve();
         };
-        video.addEventListener('canplay', onReady);
-        setTimeout(resolve, 600);
-      }
-    });
-    await video.play().catch(() => {});
-    video.pause();
-    await seekVideoTo(video, 0);
+        video.addEventListener('canplay', onReady, { once: true });
+        setTimeout(resolve, 300);
+      });
+    }
   } catch {}
+
+  onProgress?.(15, 'กำลังสร้างแทร็กวิดีโอและเสียง (H.264 / AAC Encoding)...');
 
   // 3. Setup Canvas
   const canvas = document.createElement('canvas');
@@ -155,7 +152,7 @@ async function renderWithMediabunny(
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
 
-  // Initial draw first frame onto canvas to guarantee non-empty frame
+  // Initial draw first frame onto canvas
   if (video.readyState >= 2) {
     ctx.drawImage(video, 0, 0, width, height);
   } else {
@@ -443,7 +440,7 @@ async function renderWithMediaRecorder(
 
 function seekVideoTo(video: HTMLVideoElement, targetTime: number): Promise<void> {
   return new Promise((resolve) => {
-    if (Math.abs(video.currentTime - targetTime) < 0.001 && !video.seeking && video.readyState >= 2) {
+    if (Math.abs(video.currentTime - targetTime) < 0.02 && !video.seeking && video.readyState >= 2) {
       resolve();
       return;
     }
@@ -454,11 +451,7 @@ function seekVideoTo(video: HTMLVideoElement, targetTime: number): Promise<void>
         settled = true;
         video.removeEventListener('seeked', finish);
         video.removeEventListener('error', finish);
-        if ('requestVideoFrameCallback' in video) {
-          (video as any).requestVideoFrameCallback(() => resolve());
-        } else {
-          resolve();
-        }
+        resolve();
       }
     };
 
@@ -466,7 +459,7 @@ function seekVideoTo(video: HTMLVideoElement, targetTime: number): Promise<void>
     video.addEventListener('error', finish, { once: true });
     video.currentTime = targetTime;
 
-    setTimeout(finish, 200);
+    setTimeout(finish, 100);
   });
 }
 
