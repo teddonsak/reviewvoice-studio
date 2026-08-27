@@ -13,6 +13,8 @@
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "lucide-react": "^1.33.0",
+    "mediabunny": "^1.55.3",
+    "mp4-muxer": "^5.2.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwind-merge": "^3.6.0"

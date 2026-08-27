@@ -1,4 +1,5 @@
 import { SubtitleSettings, WordTiming } from '../types';
+import { Output, Mp4OutputFormat, BufferTarget, CanvasSource, AudioBufferSource } from 'mediabunny';
 
 export interface RenderProgressCallback {
   (progressPercent: number, statusMessage: string): void;
