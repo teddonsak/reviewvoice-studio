@@ -25,17 +25,24 @@ const splitText = (text: string) => {
 const createSegments = (dual: DualScript, fullText?: string): Segment[] => {
   const tts = splitText(dual.ttsScript);
   const subtitle = splitText(dual.subtitleScript);
-  // ถ้ามีอังกฤษใน TTS แต่ไม่มีในซับ (บั๊กเก่าที่ทำให้ Daylight/Warm White หาย) ให้ซ่อมอัตโนมัติจาก fullText ต้นฉบับ
+  // ถ้ามีอังกฤษใน TTS หรือต้นฉบับแต่ไม่มีในซับ (บั๊กเก่าที่ทำให้ Daylight/Warm White หาย) ให้ซ่อมอัตโนมัติจาก fullText
   if (fullText) {
     const rawSubtitles = splitText(fullText).map(generateSubtitleScript);
     const rawTts = splitText(fullText).map(generateTtsScript);
-    const needsFix = subtitle.length !== rawSubtitles.length || subtitle.some((s, i) => /[A-Za-z]{2,}/.test(rawSubtitles[i] || '') && !/[A-Za-z]{2,}/.test(s));
+    const needsFix =
+      subtitle.length !== rawSubtitles.length ||
+      subtitle.some((s, i) => /[A-Za-z]{2,}/.test(rawSubtitles[i] || '') && !/[A-Za-z]{2,}/.test(s)) ||
+      subtitle.some((s, i) => /[A-Za-z]{2,}/.test(tts[i] || '') && !/[A-Za-z]{2,}/.test(s));
     if (needsFix && rawSubtitles.length > 0) {
-      return rawSubtitles.map((subtitleText, index) => ({
-        id: `${Date.now()}-${index}`,
-        tts: rawTts[index] || generateTtsScript(subtitleText),
-        subtitle: subtitleText
-      }));
+      return rawSubtitles.map((subtitleText, index) => {
+        const ttsText = rawTts[index] || generateTtsScript(subtitleText);
+        const hasEnglish = /[A-Za-z]{2,}/.test(subtitleText);
+        return {
+          id: `${Date.now()}-${index}`,
+          tts: hasEnglish ? subtitleText : ttsText,
+          subtitle: subtitleText
+        };
+      });
     }
   }
   return subtitle.map((subtitleText, index) => ({
