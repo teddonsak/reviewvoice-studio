@@ -1,0 +1,47 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Reverse proxies so browser-relative /pd-api /openai-api /eleven-api
+# routes reach the real upstream APIs in production (same as Vite dev proxy).
+[[redirects]]
+  from = "/pd-api/*"
+  to = "https://app.pd-voiceclone.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/openai-api/*"
+  to = "https://api.openai.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/eleven-api/*"
+  to = "https://api.elevenlabs.io/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/gemini-api/*"
+  to = "https://generativelanguage.googleapis.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/anthropic-api/*"
+  to = "https://api.anthropic.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/minimax-api/*"
+  to = "https://api.minimax.chat/:splat"
+  status = 200
+  force = true
+
+# SPA fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
