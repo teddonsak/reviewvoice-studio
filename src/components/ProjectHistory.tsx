@@ -1,6 +1,7 @@
 import React from 'react';
-import { FolderClock, Video, Trash2, RotateCcw, Play, Clock, ArrowRight } from 'lucide-react';
+import { FolderClock, Video, Trash2, RotateCcw, Play, Clock, ArrowRight, Share2 } from 'lucide-react';
 import { ProjectData } from '../types';
+import { formatExpiresCountdown } from '../services/webClipStorage';
 
 interface ProjectHistoryProps {
   projects: ProjectData[];
@@ -92,6 +93,22 @@ export const ProjectHistory: React.FC<ProjectHistoryProps> = ({
                     <span>เสียง: {project.voiceSettings.provider.toUpperCase()}</span>
                   </div>
                 </div>
+                {(project as any).shareUrl && (
+                  <div className="p-2.5 rounded-xl bg-violet-950/30 border border-violet-500/30 space-y-1">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-violet-300">
+                      <Share2 className="w-3 h-3" /> ลิงก์เว็บบนคลาวด์
+                    </div>
+                    <a href={(project as any).shareUrl} target="_blank" rel="noreferrer" className="block text-[11px] text-cyan-400 hover:text-cyan-300 truncate">{(project as any).shareUrl}</a>
+                    <div className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 inline-block">
+                      {(project as any).shareExpiresAt ? formatExpiresCountdown((project as any).shareExpiresAt) : 'ลบอัตโนมัติใน 3 วัน'}
+                    </div>
+                  </div>
+                )}
+                {(project as any).shareExpiresAt && !(project as any).shareUrl && (
+                  <div className="text-[10px] px-2 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 inline-block">
+                    {formatExpiresCountdown((project as any).shareExpiresAt)} • ลบอัตโนมัติหลังครบ 3 วัน
+                  </div>
+                )}
               </div>
 
               {/* Actions */}

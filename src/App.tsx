@@ -75,9 +75,18 @@ export function App() {
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Load saved projects on mount
+  // Load saved projects on mount (auto-cleanup 3-day web clips)
   useEffect(() => {
-    setSavedProjects(loadSavedProjects());
+    const cleaned = loadSavedProjects();
+    setSavedProjects(cleaned);
+    // แจ้งถ้ามีคลิปลบอัตโนมัติหลังครบ 3 วัน
+    try {
+      const raw = localStorage.getItem('reviewvoice_saved_projects_v1');
+      const before = raw ? JSON.parse(raw).length : 0;
+      if (before > cleaned.length) {
+        addToast('info', `ลบคลิปหมดอายุ ${before - cleaned.length} รายการ`, 'คลิปที่เก็บไว้บนเว็บครบ 3 วันจะถูกลบอัตโนมัติ');
+      }
+    } catch {}
   }, []);
 
   const addToast = (type: 'success' | 'error' | 'info', title: string, message?: string) => {

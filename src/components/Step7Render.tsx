@@ -21,6 +21,7 @@ import { renderFinalVideo } from '../services/videoRenderer';
 import { saveProjectToStorage } from '../services/storageService';
 import { generateSubtitleSegments } from '../services/thaiConverter';
 import { generateSynthesizedSpeech } from '../services/ttsService';
+import { uploadClipToWeb, formatExpiresCountdown } from '../services/webClipStorage';
 
 interface Step7RenderProps {
   project: ProjectData;
@@ -43,6 +44,9 @@ export const Step7Render: React.FC<Step7RenderProps> = ({
   const [assSubtitles, setAssSubtitles] = useState('');
   const [srtSubtitles, setSrtSubtitles] = useState('');
   const [isSaved, setIsSaved] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | undefined>(project.shareUrl);
+  const [shareExpiresAt, setShareExpiresAt] = useState<string | undefined>(project.shareExpiresAt);
 
   const handleStartRender = async () => {
     setIsRendering(true);
@@ -178,6 +182,28 @@ export const Step7Render: React.FC<Step7RenderProps> = ({
     onNotify('success', 'บันทึกโปรเจกต์ลงประวัติแล้ว', 'สามารถเปิดดูและแก้ไขใหม่ได้ตลอดเวลาจากเมนู ประวัติงาน');
   };
 
+  const handleShareWeb = async () => {
+    if (!project.renderedVideoBlob) {
+      onNotify('error', 'ยังไม่มีไฟล์วิดีโอ', 'กรุณาเรนเดอร์คลิปก่อน');
+      return;
+    }
+    setIsSharing(true);
+    try {
+      const fileName = `${(project.title || 'review_video').replace(/\s+/g, '_')}_final.mp4`;
+      const result = await uploadClipToWeb(project.renderedVideoBlob, fileName);
+      const updates = { shareUrl: result.url, shareExpiresAt: result.expiresAt, webExpiresAt: result.expiresAt } as Partial<ProjectData>;
+      onUpdateProject(updates);
+      saveProjectToStorage({ ...project, ...updates } as ProjectData);
+      setShareUrl(result.url);
+      setShareExpiresAt(result.expiresAt);
+      onNotify('success', 'อัปโหลดขึ้นเว็บสำเร็จ!', `ลิงก์จะอยู่ 3 วันแล้วลบอัตโนมัติ: ${result.url}`);
+    } catch (err: any) {
+      onNotify('error', 'อัปโหลดไม่สำเร็จ', err.message || 'ลองใหม่หรือเช็คขนาดไฟล์');
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       
@@ -281,15 +307,38 @@ export const Step7Render: React.FC<Step7RenderProps> = ({
                 คลิปนี้ตัดเสียงเดิมออกแล้ว ผสานเสียงพากย์ภาษาไทยสปีด {project.voiceSettings.speed}x และซับคาราโอเกะที่ซิงค์ตามคำพูดอย่างแม่นยำ พร้อมอัปโหลดลง TikTok, Facebook Reels, YouTube Shorts ได้ทันที!
               </p>
 
-              {/* Main Download Button */}
-              <button
-                type="button"
-                onClick={handleDownloadVideo}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-emerald-500 via-teal-500 to-indigo-600 hover:from-emerald-400 hover:to-indigo-500 shadow-xl shadow-emerald-500/25 transition-all transform hover:-translate-y-0.5"
-              >
-                <Download className="w-5 h-5" />
-                <span>ดาวน์โหลดวิดีโอคลิป (MP4)</span>
-              </button>
+              {/* Main Download + Share */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={handleDownloadVideo}
+                  className="flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-emerald-500 via-teal-500 to-indigo-600 hover:from-emerald-400 hover:to-indigo-500 shadow-xl shadow-emerald-500/25 transition-all transform hover:-translate-y-0.5"
+                >
+                  <Download className="w-5 h-5" />
+                  <span>ดาวน์โหลดวิดีโอคลิป (MP4)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleShareWeb}
+                  disabled={isSharing}
+                  className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 disabled:opacity-50 border border-violet-500/30"
+                >
+                  {isSharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
+                  <span>{isSharing ? 'กำลังอัปโหลด...' : 'เก็บไว้บนเว็บ 3 วัน'}</span>
+                </button>
+              </div>
+              {shareUrl && (
+                <div className="p-3 rounded-xl bg-violet-950/30 border border-violet-500/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-violet-300">ลิงก์แชร์ (ลบอัตโนมัติใน 3 วัน)</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">{shareExpiresAt ? formatExpiresCountdown(shareExpiresAt) : ''}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input readOnly value={shareUrl} className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+                    <button type="button" onClick={() => { navigator.clipboard.writeText(shareUrl); onNotify('success','คัดลอกลิงก์แล้ว','ส่งให้ทีมได้เลย'); }} className="px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs">คัดลอก</button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Individual Asset Export */}

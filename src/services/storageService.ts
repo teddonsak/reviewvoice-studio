@@ -102,10 +102,41 @@ export function loadSavedProjects(): ProjectData[] {
     const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const list: ProjectData[] = Array.isArray(parsed) ? parsed : [];
+    // Auto-delete หลัง 3 วัน (ตามคำขอ: เก็บ 3 วันแล้วลบอัตโนมัติ)
+    const now = Date.now();
+    const filtered = list.filter(p => {
+      const exp = (p as any).shareExpiresAt || (p as any).webExpiresAt || (p as any).expiresAt;
+      if (!exp) return true;
+      const t = new Date(exp).getTime();
+      return isNaN(t) || now < t;
+    });
+    if (filtered.length !== list.length) {
+      try { localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(filtered.slice(0, 20))); } catch {}
+    }
+    return filtered;
   } catch {
     return [];
   }
+}
+
+export function cleanupExpiredProjects(): number {
+  const before = (() => { try { return JSON.parse(localStorage.getItem(PROJECTS_STORAGE_KEY) || '[]').length; } catch { return 0; }})();
+  const after = loadSavedProjects().length;
+  return before - after;
+}
+
+export function setProjectExpiry(projectId: string, days: number = 3): void {
+  try {
+    const projects = loadSavedProjects();
+    const idx = projects.findIndex(p => p.id === projectId);
+    if (idx >= 0) {
+      const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      (projects[idx] as any).shareExpiresAt = expiresAt;
+      (projects[idx] as any).webExpiresAt = expiresAt;
+      localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects.slice(0, 20)));
+    }
+  } catch {}
 }
 
 export function saveProjectToStorage(project: ProjectData): void {

@@ -117,6 +117,10 @@ export interface ProjectData {
   renderedVideoUrl?: string;
   renderedVideoBlob?: Blob;
   status: 'draft' | 'analyzed' | 'scripted' | 'voiced' | 'rendered';
+  // Web share (3 วันแล้วลบอัตโนมัติ)
+  shareUrl?: string;
+  shareExpiresAt?: string; // ISO string
+  webExpiresAt?: string; // alias for auto-delete check
 }
 
 export interface ScriptTemplate {
