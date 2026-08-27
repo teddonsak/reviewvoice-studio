@@ -1,5 +1,13 @@
 import { SubtitleSettings, WordTiming } from '../types';
-import { Output, Mp4OutputFormat, BufferTarget, CanvasSource, AudioBufferSource } from 'mediabunny';
+import {
+  Output,
+  Mp4OutputFormat,
+  BufferTarget,
+  CanvasSource,
+  AudioBufferSource,
+  Quality,
+  canEncodeVideo
+} from 'mediabunny';
 
 export interface RenderProgressCallback {
   (progressPercent: number, statusMessage: string): void;
@@ -14,11 +22,205 @@ export interface RenderResult {
 
 /**
  * Renders composite video with:
- * 1. Source video muted
+ * 1. Source video muted (original sound removed)
  * 2. Generated TTS audio track attached (direct PCM decode via Web Audio for 100% audio guarantee)
  * 3. Dynamic Karaoke subtitles burned-in onto canvas frames
+ * 4. Genuine standard MP4 (H.264 AVC + AAC) container with faststart moov atom for universal compatibility
  */
 export async function renderFinalVideo(
+  videoSourceUrl: string,
+  audioBlob: Blob,
+  wordTimings: WordTiming[],
+  subtitleSettings: SubtitleSettings,
+  onProgress?: RenderProgressCallback
+): Promise<RenderResult> {
+  // Try WebCodecs + Mediabunny for genuine H.264/AAC MP4 encoding
+  try {
+    const isAvcSupported = await canEncodeVideo('avc').catch(() => false);
+    if (isAvcSupported && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined') {
+      return await renderWithMediabunny(
+        videoSourceUrl,
+        audioBlob,
+        wordTimings,
+        subtitleSettings,
+        onProgress
+      );
+    }
+  } catch (e) {
+    console.warn('Mediabunny encoder error or not supported, falling back to MediaRecorder:', e);
+  }
+
+  // Fallback to MediaRecorder if WebCodecs is unavailable
+  return await renderWithMediaRecorder(
+    videoSourceUrl,
+    audioBlob,
+    wordTimings,
+    subtitleSettings,
+    onProgress
+  );
+}
+
+/**
+ * High-performance deterministic frame-by-frame renderer using Mediabunny & WebCodecs.
+ * Outputs standard FastStart MP4 (H.264 + AAC) playable everywhere without corruptions.
+ */
+async function renderWithMediabunny(
+  videoSourceUrl: string,
+  audioBlob: Blob,
+  wordTimings: WordTiming[],
+  subtitleSettings: SubtitleSettings,
+  onProgress?: RenderProgressCallback
+): Promise<RenderResult> {
+  onProgress?.(5, 'กำลังเตรียมไฟล์วิดีโอและระบบตัดต่อ...');
+
+  // 1. Create and prepare video element
+  const video = document.createElement('video');
+  video.crossOrigin = 'anonymous';
+  video.src = videoSourceUrl;
+  video.muted = true;
+  video.playsInline = true;
+  (video as any).playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+
+  await new Promise<void>((res, reject) => {
+    video.onloadedmetadata = () => res();
+    video.onerror = () => reject(new Error('ไม่สามารถโหลดไฟล์วิดีโอต้นฉบับได้'));
+  });
+
+  if (video.videoWidth === 0 || video.videoHeight === 0) {
+    await new Promise<void>(res => {
+      const onCanPlay = () => { video.removeEventListener('canplay', onCanPlay); res(); };
+      video.addEventListener('canplay', onCanPlay);
+      setTimeout(() => res(), 600);
+    });
+  }
+
+  const rawWidth = video.videoWidth || 1080;
+  const rawHeight = video.videoHeight || 1920;
+  // H.264 requires even dimensions
+  const width = rawWidth % 2 === 0 ? rawWidth : rawWidth - 1;
+  const height = rawHeight % 2 === 0 ? rawHeight : rawHeight - 1;
+  const sourceDuration = isFinite(video.duration) && video.duration > 0 ? video.duration : 10;
+
+  onProgress?.(12, 'กำลังถอดรหัสคลื่นเสียงพากย์ (PCM Audio Decoding)...');
+
+  // 2. Decode audio with AudioContext
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  const audioContext = new AudioContextClass();
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+
+  let audioBuffer: AudioBuffer;
+  try {
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+  } catch (e) {
+    console.warn('decodeAudioData fallback:', e);
+    const estDuration = await getVideoRendererAudioDuration(audioBlob).catch(() => sourceDuration);
+    const silentLen = Math.ceil(estDuration * audioContext.sampleRate);
+    audioBuffer = audioContext.createBuffer(1, Math.max(1, silentLen), audioContext.sampleRate);
+  } finally {
+    try { audioContext.close().catch(() => {}); } catch {}
+  }
+
+  const timingsDuration = wordTimings.length ? Math.max(...wordTimings.map(t => t.end)) : 0;
+  const finalDuration = Math.max(audioBuffer.duration || sourceDuration, timingsDuration, sourceDuration, 3);
+
+  // 3. Setup Canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
+
+  // 4. Setup Mediabunny Output
+  const target = new BufferTarget();
+  const output = new Output({
+    format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+    target,
+  });
+
+  const videoSource = new CanvasSource(canvas, {
+    codec: 'avc',
+    quality: new Quality('high'),
+  });
+
+  const audioSource = new AudioBufferSource({
+    codec: 'aac',
+    quality: new Quality('high'),
+  });
+
+  const fps = 30;
+  output.addVideoTrack(videoSource, { frameRate: fps });
+  output.addAudioTrack(audioSource);
+
+  await output.start();
+
+  // Add full audio buffer to output
+  await audioSource.add(audioBuffer);
+  audioSource.close();
+
+  // 5. Render frames sequentially
+  const totalFrames = Math.ceil(finalDuration * fps);
+  const frameDuration = 1 / fps;
+
+  for (let i = 0; i < totalFrames; i++) {
+    const currentTime = i * frameDuration;
+    const seekTime = currentTime % sourceDuration;
+
+    video.currentTime = seekTime;
+    await waitForVideoSeek(video);
+
+    // Draw video frame onto canvas
+    if (video.readyState >= 2) {
+      ctx.drawImage(video, 0, 0, width, height);
+    } else {
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    // Draw Burned-in Subtitles onto canvas
+    drawKaraokeSubtitles(ctx, currentTime, wordTimings, subtitleSettings, width, height);
+
+    // Add canvas frame to video track
+    await videoSource.add(currentTime, frameDuration);
+
+    if (i % 6 === 0 || i === totalFrames - 1) {
+      const progressPercent = Math.min(94, Math.round((i / totalFrames) * 80) + 15);
+      onProgress?.(
+        progressPercent,
+        `กำลังเรนเดอร์เฟรมและซับ (${Math.round(currentTime)}s / ${Math.round(finalDuration)}s)...`
+      );
+    }
+  }
+
+  videoSource.close();
+
+  onProgress?.(96, 'กำลังประกอบไฟล์ MP4 (FastStart Muxing)...');
+  await output.finalize();
+
+  const finalBlob = new Blob([target.buffer!], { type: 'video/mp4' });
+  const videoUrl = URL.createObjectURL(finalBlob);
+
+  const assContent = generateAssSubtitles(wordTimings, subtitleSettings, width, height);
+  const srtContent = generateSrtSubtitles(wordTimings);
+
+  onProgress?.(100, 'เรนเดอร์คลิปวิดีโอเสร็จสมบูรณ์!');
+
+  return {
+    videoBlob: finalBlob,
+    videoUrl,
+    assSubtitleContent: assContent,
+    srtSubtitleContent: srtContent,
+  };
+}
+
+/**
+ * Fallback MediaRecorder implementation
+ */
+async function renderWithMediaRecorder(
   videoSourceUrl: string,
   audioBlob: Blob,
   wordTimings: WordTiming[],
@@ -29,19 +231,18 @@ export async function renderFinalVideo(
     try {
       onProgress?.(5, 'กำลังเตรียมไฟล์วิดีโอและระบบตัดต่อ...');
 
-      // 1. Create Video Element
       const video = document.createElement('video');
       video.crossOrigin = 'anonymous';
       video.src = videoSourceUrl;
-      video.muted = true; // ลบเสียงเดิมของวิดีโอต้นฉบับ
+      video.muted = true;
       video.playsInline = true;
       (video as any).playsInline = true;
       video.setAttribute('playsinline', '');
       video.setAttribute('webkit-playsinline', '');
-      video.loop = true; // วนคลิปต้นฉบับอัตโนมัติเมื่อเสียงพากย์ยาวกว่า
-      // บนมือถือต้องอยู่ใน DOM ถึงจะเล่นและ capture ได้
-      const isMobileEarly = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
-      if (isMobileEarly) {
+      video.loop = true;
+
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+      if (isMobile) {
         video.style.position = 'fixed';
         video.style.left = '-9999px';
         video.style.top = '-9999px';
@@ -56,8 +257,6 @@ export async function renderFinalVideo(
         video.onerror = () => rej(new Error('ไม่สามารถโหลดไฟล์วิดีโอต้นฉบับได้'));
       });
 
-      // Video dimensions - default vertical 1080x1920 or matched aspect
-      // บนมือถือบางรุ่น videoWidth/Height เป็น 0 จนกว่าจะเล่นเฟรมแรก — รอให้พร้อม
       if (video.videoWidth === 0 || video.videoHeight === 0) {
         await new Promise<void>(res => {
           const onCanPlay = () => { video.removeEventListener('canplay', onCanPlay); res(); };
@@ -65,14 +264,13 @@ export async function renderFinalVideo(
           setTimeout(() => res(), 800);
         });
       }
+
       const width = video.videoWidth || 1080;
       const height = video.videoHeight || 1920;
-      const duration = isFinite(video.duration) && video.duration > 0 && video.duration < 600 ? video.duration : 10;
+      const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 10;
 
       onProgress?.(15, 'กำลังถอดรหัสคลื่นเสียงพากย์ (PCM Audio Decoding)...');
 
-      // 2. Decode Audio - ใช้ sampleRate ปกติบนมือถือ (iOS ไม่รองรับ 48kHz แบบบังคับ)
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = isMobile ? new AudioContextClass() : new AudioContextClass({ sampleRate: 48000 });
       if (audioContext.state === 'suspended') {
@@ -86,26 +284,21 @@ export async function renderFinalVideo(
         audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
         audioDuration = audioBuffer.duration || duration;
       } catch (e) {
-        console.warn('decodeAudioData failed on mobile, fallback to element duration', e);
         audioDuration = await getVideoRendererAudioDuration(audioBlob).catch(() => duration);
-        // สร้าง buffer เปล่าเพื่อยังต่อสายได้ แต่ใช้เวลาจาก element แทน
         const silentLen = Math.ceil(audioDuration * audioContext.sampleRate);
         audioBuffer = audioContext.createBuffer(1, Math.max(1, silentLen), audioContext.sampleRate);
       }
-      // กันกรณีคำนวณพลาดบนมือถือแล้วได้ 1 วิ — ใช้ wordTimings หรือ duration จริงแทน
+
       const timingsDuration = wordTimings.length ? Math.max(...wordTimings.map(t => t.end)) : 0;
-      const estimatedDuration = Math.max(duration, audioDuration, timingsDuration, 4);
-      const finalDuration = estimatedDuration;
+      const finalDuration = Math.max(duration, audioDuration, timingsDuration, 3);
 
       const audioDestination = audioContext.createMediaStreamDestination();
       const bufferSource = audioContext.createBufferSource();
       bufferSource.buffer = audioBuffer;
       bufferSource.connect(audioDestination);
 
-      // 3. Canvas setup - บนมือถือต้องอยู่ใน DOM ถึงจะ capture ได้ + ลดขนาดบนมือถือเพื่อไม่ให้ encoder ล้ม
-      const isMobileCanvas = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
-      const targetWidth = isMobileCanvas ? Math.min(width, 720) : width;
-      const targetHeight = isMobileCanvas ? Math.round((targetWidth / width) * height) : height;
+      const targetWidth = isMobile ? Math.min(width, 720) : width;
+      const targetHeight = isMobile ? Math.round((targetWidth / width) * height) : height;
       const canvas = document.createElement('canvas');
       canvas.width = targetWidth;
       canvas.height = targetHeight;
@@ -116,49 +309,32 @@ export async function renderFinalVideo(
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
 
-      // 4. Capture Stream and MediaRecorder (บังคับ MP4 ก่อน แต่ตรวจบนมือถือจริง)
-      // บน iOS Safari มีแค่ MP4, บน Android Chrome มีทั้งคู่ — ต้องเลือกอันที่รองรับจริง
       let canvasStream: MediaStream;
       try {
-        canvasStream = (canvas as any).captureStream ? canvas.captureStream(30) : (canvas as any).captureStream(30);
-        if (!canvasStream || canvasStream.getVideoTracks().length === 0) throw new Error('no canvas track');
+        canvasStream = canvas.captureStream ? canvas.captureStream(30) : (canvas as any).captureStream(30);
       } catch (e) {
-        console.warn('canvas.captureStream failed, fallback to video capture', e);
         const videoStream = (video as any).captureStream ? (video as any).captureStream(30) : null;
         if (videoStream) canvasStream = videoStream;
-        else throw new Error('เบราว์เซอร์มือถือนี้ไม่รองรับการอัดวิดีโอจาก Canvas');
+        else throw new Error('เบราว์เซอร์ไม่รองรับการอัดวิดีโอจาก Canvas');
       }
+
       const combinedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...audioDestination.stream.getAudioTracks()
       ]);
 
-      // ลำดับความสำคัญ: MP4 (H.264/AAC) ก่อน เพื่อให้ไฟล์ .mp4 เล่นได้ทุกเครื่อง
-      // บนมือถือใช้ Baseline profile (avc1.42E01E) ที่เข้ากันได้สูงสุด + bitrate ต่ำลง
-      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
-      const candidates = isMobile
-        ? [
-            'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-            'video/mp4;codecs=avc1,mp4a.40.2',
-            'video/mp4;codecs=avc1',
-            'video/mp4',
-            'video/webm;codecs=vp8,opus',
-            'video/webm'
-          ]
-        : [
-            'video/mp4;codecs=avc1,mp4a.40.2',
-            'video/mp4;codecs=avc1',
-            'video/mp4',
-            'video/webm;codecs=vp9,opus',
-            'video/webm;codecs=vp8,opus',
-            'video/webm'
-          ];
+      const candidates = [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4;codecs=avc1',
+        'video/mp4',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm'
+      ];
       let mimeType = candidates.find(t => {
         try { return (window as any).MediaRecorder && MediaRecorder.isTypeSupported(t); } catch { return false; }
-      }) || (isIOS ? 'video/mp4' : 'video/mp4;codecs=avc1,mp4a.40.2');
-      if (isMobile && mimeType.includes('webm') && isIOS) {
-        mimeType = 'video/mp4';
-      }
+      }) || 'video/mp4';
 
       const recorder = new MediaRecorder(combinedStream, {
         mimeType,
@@ -196,7 +372,6 @@ export async function renderFinalVideo(
         reject(new Error(`เกิดข้อผิดพลาดในการบันทึกวิดีโอ: ${err.toString()}`));
       };
 
-      // 5. Start Playback & Recording simultaneously
       recorder.start(100);
       bufferSource.start(0);
       video.currentTime = 0;
@@ -212,9 +387,7 @@ export async function renderFinalVideo(
         const progress = Math.min(95, Math.round((elapsed / finalDuration) * 80) + 15);
         onProgress?.(progress, `กำลังเรนเดอร์เฟรมและเสียงพากย์ (${Math.round(elapsed)}s / ${Math.round(finalDuration)}s)...`);
 
-        // Safety net if loop attribute fails (some browsers) – manually rewind
         if (video.currentTime >= duration - 0.15 && elapsed < finalDuration - 0.1) {
-          // keep playing, loop will handle it; if paused, restart
           if (video.paused) video.play().catch(() => {});
         }
         if (video.ended && elapsed < finalDuration) {
@@ -222,17 +395,14 @@ export async function renderFinalVideo(
           video.play().catch(() => {});
         }
 
-        // Draw Video Frame – ensure readyState has data, otherwise keep last frame
         if (video.readyState >= 2) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         } else {
-          // ถ้าวิดีโอยังไม่พร้อม ให้เติมพื้นหลังดำไว้ก่อน กันจอขาวบนมือถือ
           ctx.fillStyle = '#000';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
-        // Draw Subtitles on Canvas
-        drawKaraokeSubtitles(ctx, elapsed, wordTimings, subtitleSettings, width, height);
+        drawKaraokeSubtitles(ctx, elapsed, wordTimings, subtitleSettings, canvas.width, canvas.height);
 
         if (elapsed >= finalDuration) {
           recorder.stop();
@@ -250,9 +420,27 @@ export async function renderFinalVideo(
   });
 }
 
+function waitForVideoSeek(video: HTMLVideoElement): Promise<void> {
+  return new Promise((resolve) => {
+    if (video.seeking) {
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      video.addEventListener('seeked', onSeeked);
+      setTimeout(() => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      }, 150);
+    } else {
+      resolve();
+    }
+  });
+}
+
 /**
- * Draws crisp, natural Thai subtitles with contiguous script (matching reference style),
- * clean stroke outline, and automatic screen boundary clamping.
+ * Draws crisp, natural Thai subtitles with contiguous script,
+ * clean stroke outline, karaoke highlight, and accurate position coordinates.
  */
 export function drawKaraokeSubtitles(
   ctx: CanvasRenderingContext2D,
@@ -264,16 +452,14 @@ export function drawKaraokeSubtitles(
 ) {
   if (!wordTimings || wordTimings.length === 0) return;
 
-  // Find the exact active word timestamp returned by transcription alignment.
-  let activeIndex = wordTimings.findIndex(t => currentTime >= t.start && currentTime <= t.end);
+  const tol = 0.08;
+  let activeIndex = wordTimings.findIndex(t => currentTime >= t.start - tol && currentTime <= t.end + tol);
   let activePhrase = activeIndex >= 0 ? wordTimings[activeIndex] : undefined;
   if (!activePhrase) {
-    // Check if within 0.3s tolerance of nearest segment to avoid flickering
-    activeIndex = wordTimings.findIndex(t => currentTime >= (t.start - 0.06) && currentTime <= (t.end + 0.1));
+    activeIndex = wordTimings.findIndex(t => currentTime >= (t.start - 0.15) && currentTime <= (t.end + 0.20));
     activePhrase = activeIndex >= 0 ? wordTimings[activeIndex] : undefined;
   }
 
-  // If before first segment, show first segment ready
   if (!activePhrase && currentTime < wordTimings[0].start && wordTimings[0].start < 1.0) {
     activePhrase = wordTimings[0];
     activeIndex = 0;
@@ -293,19 +479,33 @@ export function drawKaraokeSubtitles(
   }).join('');
   const phraseText = joinWords(lineWords);
 
-  // Subtitle Positioning
-  let yPos = canvasHeight * 0.76; // Default 'middle-top' / 'high' or 'bottom'
-  if (settings.position === 'top') {
-    yPos = canvasHeight * 0.16;
-  } else if (settings.position === 'middle-top') {
-    yPos = canvasHeight * 0.32;
-  } else if (settings.position === 'middle') {
-    yPos = canvasHeight * 0.52;
-  } else if (settings.position === 'bottom') {
-    yPos = canvasHeight * 0.80;
+  // Subtitle Positioning calculation
+  let yPos: number;
+  if (typeof settings.yPercent === 'number' && !isNaN(settings.yPercent)) {
+    yPos = canvasHeight * (Math.max(5, Math.min(95, settings.yPercent)) / 100);
+  } else {
+    switch (settings.position) {
+      case 'top':
+        yPos = canvasHeight * 0.16;
+        break;
+      case 'middle-top':
+        yPos = canvasHeight * 0.32;
+        break;
+      case 'middle':
+        yPos = canvasHeight * 0.50;
+        break;
+      case 'middle-bottom':
+        yPos = canvasHeight * 0.75;
+        break;
+      case 'bottom':
+        yPos = canvasHeight * 0.88;
+        break;
+      default:
+        yPos = canvasHeight * 0.75;
+    }
   }
 
-  // Base font scale relative to 1080px canvas
+  // Base font scale relative to 1080px canvas reference
   const scale = canvasWidth / 1080;
   let currentFontSize = Math.max(18, Math.round((settings.fontSize || 84) * scale));
   const fontWeight = settings.fontWeight || '800';
@@ -344,7 +544,6 @@ export function drawKaraokeSubtitles(
     ctx.roundRect(centerX - boxWidth / 2, yPos - boxHeight / 2, boxWidth, boxHeight, radius);
     ctx.fill();
 
-    // Subtle border glow
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
     ctx.lineWidth = Math.max(1, 1.5 * scale);
     ctx.stroke();
@@ -364,8 +563,6 @@ export function drawKaraokeSubtitles(
 
   // Text Fill Color
   if (settings.styleMode === 'karaoke') {
-    // Draw the complete readable line, then highlight only the word whose
-    // transcription timestamp is active. No estimated left-to-right sweep.
     ctx.fillStyle = settings.textColor || '#FFFFFF';
     ctx.fillText(phraseText, centerX, yPos);
     const localActiveIndex = Math.max(0, activeIndex - lineStart);
@@ -382,7 +579,6 @@ export function drawKaraokeSubtitles(
     ctx.fillText(activeWord, wordX, yPos);
     ctx.restore();
   } else {
-    // Standard Crisp White Text Fill
     ctx.fillStyle = settings.textColor || '#FFFFFF';
     ctx.fillText(phraseText, centerX, yPos);
   }
@@ -399,6 +595,21 @@ export function generateAssSubtitles(
   width: number,
   height: number
 ): string {
+  let marginV = 150;
+  if (typeof settings.yPercent === 'number' && !isNaN(settings.yPercent)) {
+    marginV = Math.round(height * (1 - Math.max(5, Math.min(95, settings.yPercent)) / 100));
+  } else if (settings.position === 'top') {
+    marginV = Math.round(height * 0.84);
+  } else if (settings.position === 'middle-top') {
+    marginV = Math.round(height * 0.68);
+  } else if (settings.position === 'middle') {
+    marginV = Math.round(height * 0.50);
+  } else if (settings.position === 'middle-bottom') {
+    marginV = Math.round(height * 0.25);
+  } else if (settings.position === 'bottom') {
+    marginV = Math.round(height * 0.12);
+  }
+
   const header = `[Script Info]
 Title: ReviewVoice Studio Karaoke Subtitles
 ScriptType: v4.00+
@@ -409,7 +620,7 @@ PlayResY: ${height}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,${settings.fontFamily || 'Kanit'},${settings.fontSize || 84},&H00FFFFFF,&H0015CCFA,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,20,20,${settings.position === 'top' ? 800 : settings.position === 'middle' ? 450 : 150},1
+Style: Karaoke,${settings.fontFamily || 'Kanit'},${settings.fontSize || 84},&H00FFFFFF,&H0015CCFA,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,20,20,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -502,7 +713,6 @@ function getVideoRendererAudioDuration(blob: Blob): Promise<number> {
     audio.src = URL.createObjectURL(blob);
     audio.addEventListener('loadedmetadata', () => resolve(audio.duration || 10));
     audio.addEventListener('error', () => resolve(10));
-    // timeout fallback
     setTimeout(() => resolve(10), 3000);
   });
 }

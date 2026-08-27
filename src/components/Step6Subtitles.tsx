@@ -183,11 +183,22 @@ export const Step6Subtitles: React.FC<Step6SubtitlesProps> = ({
     if (!ctx) return;
 
     const render = () => {
+      if (video.videoWidth && video.videoHeight) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+      }
       const w = canvas.width;
       const h = canvas.height;
 
       // Draw current video frame
-      ctx.drawImage(video, 0, 0, w, h);
+      if (video.readyState >= 2) {
+        ctx.drawImage(video, 0, 0, w, h);
+      } else {
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, w, h);
+      }
 
       // Draw Karaoke Subtitles on top!
       drawKaraokeSubtitles(ctx, video.currentTime, wordTimings, settings, w, h);
@@ -732,50 +743,106 @@ export const Step6Subtitles: React.FC<Step6SubtitlesProps> = ({
             </p>
           </div>
 
-          {/* Vertical Position (High / Middle / Bottom) */}
-          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-2">
-            <label className="block text-xs font-semibold text-slate-300">
-              ตำแหน่งแนวตั้ง (Vertical Position):
-            </label>
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => handleSettingChange('position', 'top')}
-                className={`p-2.5 rounded-lg border text-center transition-all ${
-                  settings.position === 'top'
-                    ? 'bg-indigo-600/30 border-indigo-500 text-indigo-200'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
-              >
-                สูง (บนสุด)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSettingChange('position', 'middle-top')}
-                className={`p-2.5 rounded-lg border text-center transition-all ${
-                  settings.position === 'middle-top'
-                    ? 'bg-indigo-600/30 border-indigo-500 text-indigo-200 ring-1 ring-indigo-500/40'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
-              >
-                สูงปานกลาง (ค่าเริ่มต้น)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSettingChange('position', 'bottom')}
-                className={`p-2.5 rounded-lg border text-center transition-all ${
-                  settings.position === 'bottom'
-                    ? 'bg-indigo-600/30 border-indigo-500 text-indigo-200'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
-              >
-                กลาง-ล่าง
-              </button>
+          {/* Vertical Position (High / Middle / Bottom / Custom Slider) */}
+          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                <Sliders className="w-4 h-4 text-indigo-400" />
+                ตำแหน่งแนวตั้งของซับไตเติ้ล (Vertical Position):
+              </span>
+              <span className="font-bold text-xs px-2 py-0.5 rounded bg-indigo-950/80 text-cyan-300 border border-indigo-500/30 font-mono">
+                {typeof settings.yPercent === 'number'
+                  ? `${settings.yPercent}% จากขอบบน`
+                  : settings.position === 'top'
+                  ? '16% (บนสุด)'
+                  : settings.position === 'middle-top'
+                  ? '32% (บน-กลาง)'
+                  : settings.position === 'middle'
+                  ? '50% (กลางจอ)'
+                  : settings.position === 'bottom'
+                  ? '88% (ล่างสุด)'
+                  : '75% (กลาง-ล่าง)'}
+              </span>
             </div>
-            <p className="text-[11px] text-slate-400 mt-1">
-              *ตำแหน่งสูงปานกลาง ช่วยไม่ให้ซับไปบังปุ่มตะกร้าสีเหลืองและปุ่มแชร์ของ TikTok / Reels
+
+            {/* 5 Quick Presets */}
+            <div className="grid grid-cols-5 gap-1.5 text-xs">
+              {[
+                { label: 'บนสุด', pos: 'top' as const, y: 16, desc: '16%' },
+                { label: 'บน-กลาง', pos: 'middle-top' as const, y: 32, desc: '32%' },
+                { label: 'กลางจอ', pos: 'middle' as const, y: 50, desc: '50%' },
+                { label: 'กลาง-ล่าง', pos: 'middle-bottom' as const, y: 75, desc: '75% แนะนำ' },
+                { label: 'ล่างสุด', pos: 'bottom' as const, y: 88, desc: '88%' },
+              ].map((p) => {
+                const isSelected =
+                  settings.yPercent === p.y ||
+                  (settings.yPercent === undefined && settings.position === p.pos);
+
+                return (
+                  <button
+                    key={p.pos}
+                    type="button"
+                    onClick={() => {
+                      const updated = {
+                        ...settings,
+                        position: p.pos,
+                        yPercent: p.y
+                      };
+                      setSettings(updated);
+                      onUpdateProject({ subtitleSettings: updated });
+                    }}
+                    className={`p-2 rounded-lg border text-center transition-all ${
+                      isSelected
+                        ? 'bg-indigo-600/40 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/40 shadow-sm'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="text-xs truncate">{p.label}</div>
+                    <div className="text-[9px] text-slate-400 truncate">{p.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Fine Tuning Slider */}
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>เลื่อนปรับความสูงละเอียด (5% บนสุด - 95% ล่างสุด):</span>
+              </div>
+              <input
+                type="range"
+                min="5"
+                max="95"
+                step="1"
+                value={
+                  typeof settings.yPercent === 'number'
+                    ? settings.yPercent
+                    : settings.position === 'top'
+                    ? 16
+                    : settings.position === 'middle-top'
+                    ? 32
+                    : settings.position === 'middle'
+                    ? 50
+                    : settings.position === 'bottom'
+                    ? 88
+                    : 75
+                }
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  const updated = {
+                    ...settings,
+                    position: 'custom' as const,
+                    yPercent: val
+                  };
+                  setSettings(updated);
+                  onUpdateProject({ subtitleSettings: updated });
+                }}
+                className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+              />
+            </div>
+
+            <p className="text-[11px] text-slate-400">
+              *ตำแหน่ง 70% - 75% (กลาง-ล่าง) ช่วยไม่ให้ซับไปบังปุ่มตะกร้าสีเหลืองและปุ่มแชร์ของ TikTok / Reels
             </p>
           </div>
 

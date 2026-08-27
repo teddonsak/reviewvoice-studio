@@ -199,7 +199,8 @@ export function App() {
       subtitleSettings: {
         ...DEFAULT_SUBTITLE_SETTINGS,
         fontSize: 84,
-        position: 'middle-top',
+        position: 'middle-bottom',
+        yPercent: 75,
         highlightColor: '#FACC15',
         fontFamily: 'Kanit'
       }

@@ -73,7 +73,8 @@ export interface VoiceSettings {
 
 export interface SubtitleSettings {
   fontSize: number;    // default 84
-  position: 'top' | 'middle-top' | 'middle' | 'bottom'; // default 'middle-top' (high)
+  position: 'top' | 'middle-top' | 'middle' | 'middle-bottom' | 'bottom' | 'custom'; // default 'middle-bottom'
+  yPercent?: number;   // 0 - 100 percentage from top (e.g. 75)
   wordsPerLine: number; // default 3 words per chunk/line (1 to 6)
   styleMode: 'karaoke' | 'standard'; // 'karaoke' (word-by-word highlight) or 'standard' (clean full-line subtitles)
   textColor: string;

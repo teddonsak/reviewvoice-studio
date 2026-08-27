@@ -42,7 +42,8 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
 
 export const DEFAULT_SUBTITLE_SETTINGS: SubtitleSettings = {
   fontSize: 84,
-  position: 'middle-top', // ค่าเริ่มต้นตำแหน่งสูงตามข้อกำหนด
+  position: 'middle-bottom', // ตำแหน่งกลาง-ล่าง (75%) ไม่บังตะกร้าเหลือง TikTok
+  yPercent: 75,
   wordsPerLine: 3,        // ค่าเริ่มต้น 3 คำต่อแถว (กระชับ สวยงาม ไม่ล้นจอ)
   styleMode: 'karaoke',   // 'karaoke' (ไฮไลต์คำวิ่ง) หรือ 'standard' (ซับปกติ)
   textColor: '#FFFFFF',
