@@ -34,23 +34,38 @@ export async function renderFinalVideo(
   subtitleSettings: SubtitleSettings,
   onProgress?: RenderProgressCallback
 ): Promise<RenderResult> {
-  // Try WebCodecs + Mediabunny for genuine H.264/AAC MP4 encoding
-  try {
-    const isAvcSupported = await canEncodeVideo('avc').catch(() => false);
-    if (isAvcSupported && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined') {
-      return await renderWithMediabunny(
-        videoSourceUrl,
-        audioBlob,
-        wordTimings,
-        subtitleSettings,
-        onProgress
-      );
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+
+  // On Desktop: Try WebCodecs + Mediabunny for genuine H.264/AAC MP4 encoding
+  if (!isMobile && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined') {
+    try {
+      const isAvcSupported = await canEncodeVideo('avc').catch(() => false);
+      let isAacSupported = false;
+      try {
+        isAacSupported = await (AudioEncoder as any).isConfigSupported?.({
+          codec: 'mp4a.40.2',
+          sampleRate: 48000,
+          numberOfChannels: 2
+        }).then((res: any) => res.supported).catch(() => false);
+      } catch {
+        isAacSupported = false;
+      }
+
+      if (isAvcSupported && isAacSupported) {
+        return await renderWithMediabunny(
+          videoSourceUrl,
+          audioBlob,
+          wordTimings,
+          subtitleSettings,
+          onProgress
+        );
+      }
+    } catch (e) {
+      console.warn('Mediabunny encoder error or not supported, falling back to MediaRecorder:', e);
     }
-  } catch (e) {
-    console.warn('Mediabunny encoder error or not supported, falling back to MediaRecorder:', e);
   }
 
-  // Fallback to MediaRecorder if WebCodecs is unavailable
+  // On Mobile or fallback: Use real-time MediaRecorder
   return await renderWithMediaRecorder(
     videoSourceUrl,
     audioBlob,
