@@ -134,11 +134,26 @@ export async function renderFinalVideo(
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
 
-      // Initial draw background
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+      // Pre-warm and render actual video frame 0 onto canvas BEFORE starting recording
+      video.currentTime = 0;
+      await new Promise<void>((resolve) => {
+        let attempts = 0;
+        const checkReady = () => {
+          attempts++;
+          if (video && video.readyState >= 2 && video.videoWidth > 0) {
+            ctx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
+            drawKaraokeSubtitles(ctx, 0, wordTimings, subtitleSettings, canvasWidth, canvasHeight);
+            resolve();
+          } else if (attempts < 20) {
+            setTimeout(checkReady, 50);
+          } else {
+            resolve();
+          }
+        };
+        checkReady();
+      });
 
-      // 4. Capture Canvas Stream
+      // 4. Capture Canvas Stream (Starts directly with decoded video frame 0)
       let canvasStream: MediaStream;
       try {
         canvasStream = canvas.captureStream ? canvas.captureStream(30) : (canvas as any).captureStream(30);
@@ -223,11 +238,11 @@ export async function renderFinalVideo(
         reject(new Error(`เกิดข้อผิดพลาดในการบันทึกวิดีโอ: ${err.toString()}`));
       };
 
-      // 6. Start Recording & Playback
-      recorder.start(100);
-      bufferSource.start(0);
+      // 6. Start Playback & Recording synchronously
       video.currentTime = 0;
       await video.play().catch(() => {});
+      recorder.start(100);
+      bufferSource.start(0);
 
       const startTime = performance.now();
 
