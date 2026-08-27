@@ -101,10 +101,13 @@ export async function renderFinalVideo(
       bufferSource.buffer = audioBuffer;
       bufferSource.connect(audioDestination);
 
-      // 3. Canvas setup - บนมือถือต้องอยู่ใน DOM ถึงจะ capture ได้
+      // 3. Canvas setup - บนมือถือต้องอยู่ใน DOM ถึงจะ capture ได้ + ลดขนาดบนมือถือเพื่อไม่ให้ encoder ล้ม
+      const isMobileCanvas = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+      const targetWidth = isMobileCanvas ? Math.min(width, 720) : width;
+      const targetHeight = isMobileCanvas ? Math.round((targetWidth / width) * height) : height;
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
       canvas.style.position = 'fixed';
       canvas.style.left = '-9999px';
       canvas.style.top = '-9999px';
@@ -130,27 +133,36 @@ export async function renderFinalVideo(
       ]);
 
       // ลำดับความสำคัญ: MP4 (H.264/AAC) ก่อน เพื่อให้ไฟล์ .mp4 เล่นได้ทุกเครื่อง
-      // ตรวจแบบเข้มบนมือถือ — บางเครื่องอ้างว่ารองรับแต่จริงอัดไม่ได้ ต้องลองจริง
-      const candidates = [
-        'video/mp4;codecs=avc1,mp4a.40.2',
-        'video/mp4;codecs=avc1',
-        'video/mp4',
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm'
-      ];
+      // บนมือถือใช้ Baseline profile (avc1.42E01E) ที่เข้ากันได้สูงสุด + bitrate ต่ำลง
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+      const candidates = isMobile
+        ? [
+            'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+            'video/mp4;codecs=avc1,mp4a.40.2',
+            'video/mp4;codecs=avc1',
+            'video/mp4',
+            'video/webm;codecs=vp8,opus',
+            'video/webm'
+          ]
+        : [
+            'video/mp4;codecs=avc1,mp4a.40.2',
+            'video/mp4;codecs=avc1',
+            'video/mp4',
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm'
+          ];
       let mimeType = candidates.find(t => {
         try { return (window as any).MediaRecorder && MediaRecorder.isTypeSupported(t); } catch { return false; }
-      }) || 'video/mp4;codecs=avc1,mp4a.40.2';
-      // บน iOS ถ้าเลือก webm จะอัดไม่ได้ ให้บังคับ mp4
-      if (isMobile && mimeType.includes('webm') && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-        mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
+      }) || (isIOS ? 'video/mp4' : 'video/mp4;codecs=avc1,mp4a.40.2');
+      if (isMobile && mimeType.includes('webm') && isIOS) {
+        mimeType = 'video/mp4';
       }
 
       const recorder = new MediaRecorder(combinedStream, {
         mimeType,
-        videoBitsPerSecond: 6000000, // 6 Mbps crystal clear video
-        audioBitsPerSecond: 192000  // 192 kbps high fidelity Opus audio
+        videoBitsPerSecond: isMobile ? 2500000 : 6000000,
+        audioBitsPerSecond: isMobile ? 128000 : 192000
       });
 
       const recordedChunks: Blob[] = [];
@@ -167,7 +179,7 @@ export async function renderFinalVideo(
         const finalBlob = new Blob(recordedChunks, { type: mimeType });
         const videoUrl = URL.createObjectURL(finalBlob);
 
-        const assContent = generateAssSubtitles(wordTimings, subtitleSettings, width, height);
+        const assContent = generateAssSubtitles(wordTimings, subtitleSettings, canvas.width, canvas.height);
         const srtContent = generateSrtSubtitles(wordTimings);
 
         onProgress?.(100, 'เรนเดอร์คลิปวิดีโอเสร็จสมบูรณ์!');
@@ -211,7 +223,11 @@ export async function renderFinalVideo(
 
         // Draw Video Frame – ensure readyState has data, otherwise keep last frame
         if (video.readyState >= 2) {
-          ctx.drawImage(video, 0, 0, width, height);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        } else {
+          // ถ้าวิดีโอยังไม่พร้อม ให้เติมพื้นหลังดำไว้ก่อน กันจอขาวบนมือถือ
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
         // Draw Subtitles on Canvas
