@@ -78,7 +78,8 @@ export function loadApiKeys(): ProviderApiKeys {
         geminiModel: (() => {
           const m = parsed.ai_analysis?.geminiModel;
           if (!m) return DEFAULT_API_KEYS.ai_analysis.geminiModel;
-          if (['gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro'].includes(m)) return 'gemini-2.0-flash';
+          const retired = ['gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro', 'gemini-2.0-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.1-pro'];
+          if (retired.includes(m)) return 'gemini-2.0-flash';
           return m;
         })()
       }

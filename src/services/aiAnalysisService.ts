@@ -53,14 +53,16 @@ export async function analyzeProductWithAI(
   // 1. Google Gemini Multimodal Vision API (Best for Video Frames with auto-fallback for high demand)
   if (provider === 'gemini' && aiConfig.geminiApiKey.trim()) {
     const primaryModel = aiConfig.geminiModel || 'gemini-2.0-flash';
-    // Fallback list strictly using current stable models (gemini-1.5-pro is retired on v1beta as of 2025)
+    // Fallback list strictly using current stable models (gemini-1.5-pro / 2.0-flash-lite retired on v1beta)
     const modelsToTry = Array.from(new Set([
       primaryModel,
       'gemini-2.0-flash',
       'gemini-2.5-flash',
       'gemini-1.5-flash',
+      'gemini-3.5-flash-lite',
       'gemini-1.5-flash-latest',
-      'gemini-2.0-flash-lite'
+      'gemini-1.5-flash-8b',
+      'gemini-2.0-flash-exp'
     ]));
 
     // Build parts with text prompt + image frame parts (limit to top 3 frames for blazing fast 2-second response)
