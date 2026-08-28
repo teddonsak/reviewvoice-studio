@@ -145,6 +145,13 @@ export const Step5Voice: React.FC<Step5VoiceProps> = ({
     }
   }, [keys.elevenlabs.model]);
 
+  // Sync incoming speed from project
+  useEffect(() => {
+    if (project.voiceSettings.speed !== undefined && Math.abs(project.voiceSettings.speed - speed) > 0.01) {
+      setSpeed(project.voiceSettings.speed);
+    }
+  }, [project.voiceSettings.speed]);
+
   // Sync state to parent on change
   useEffect(() => {
     const updatedSettings: VoiceSettings = {
@@ -721,22 +728,63 @@ export const Step5Voice: React.FC<Step5VoiceProps> = ({
       {/* Voice Controls: Speed, Tone, Language */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-5 p-5 rounded-2xl bg-slate-900/60 border border-slate-800">
         
-        {/* Speed Slider (0.9 - 1.3, default 1.22) */}
-        <div className="md:col-span-6 space-y-2">
+        {/* Speed Slider (0.8 - 1.6, with Auto-Fit) */}
+        <div className="md:col-span-6 space-y-2.5">
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold text-slate-300 flex items-center gap-1.5">
               <Gauge className="w-4 h-4 text-indigo-400" />
               ความเร็วเสียง (Speech Speed):
             </span>
-            <span className="font-bold text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30">
-              {speed.toFixed(2)}x {speed === 1.22 ? '(ค่าเริ่มต้นแนะนำ)' : ''}
-            </span>
+            <div className="flex items-center gap-2">
+              {project.reviewScript.targetDurationSeconds && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetSec = project.reviewScript.targetDurationSeconds || 45;
+                    const text = project.dualScript.ttsScript || project.reviewScript.fullText;
+                    const thaiChars = (text.match(/[\u0E00-\u0E7F0-9A-Za-z]/g) || []).length;
+                    const optimalSpeed = Math.max(0.85, Math.min(1.6, Number((thaiChars / (10.5 * targetSec)).toFixed(2))));
+                    setSpeed(optimalSpeed);
+                    onNotify('info', 'ปรับสปีดอัตโนมัติ!', `ตั้งค่าความเร็ว ${optimalSpeed.toFixed(2)}x เพื่อให้จบใน ${targetSec} วินาที`);
+                  }}
+                  className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold hover:bg-amber-500/30 transition-all flex items-center gap-1"
+                >
+                  ⚡ ออโต้ {project.reviewScript.targetDurationSeconds}s
+                </button>
+              )}
+              <span className="font-bold text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30">
+                {speed.toFixed(2)}x
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-5 gap-1 text-[10px]">
+            {[
+              { val: 0.95, label: '0.95x ช้า' },
+              { val: 1.05, label: '1.05x ปกติ' },
+              { val: 1.15, label: '1.15x ธรรมชาติ' },
+              { val: 1.22, label: '1.22x ป้ายยา' },
+              { val: 1.35, label: '1.35x ไวรัล' },
+            ].map((s) => (
+              <button
+                key={s.val}
+                type="button"
+                onClick={() => setSpeed(s.val)}
+                className={`py-1 px-0.5 rounded border text-center transition-all ${
+                  Math.abs(speed - s.val) < 0.03
+                    ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
           </div>
 
           <input
             type="range"
-            min="0.9"
-            max="1.3"
+            min="0.8"
+            max="1.6"
             step="0.01"
             value={speed}
             onChange={(e) => setSpeed(parseFloat(e.target.value))}
@@ -744,9 +792,9 @@ export const Step5Voice: React.FC<Step5VoiceProps> = ({
           />
 
           <div className="flex justify-between text-[10px] text-slate-400">
-            <span>0.9x ช้า/สบาย</span>
-            <span className="text-indigo-400">1.22x พอดีคลิปรีวิว</span>
-            <span>1.30x เร็ว/กระชับ</span>
+            <span>0.80x ช้าชัด</span>
+            <span className="text-indigo-400">1.22x TikTok แนะนำ</span>
+            <span>1.60x เร็วฉับไว</span>
           </div>
         </div>
 

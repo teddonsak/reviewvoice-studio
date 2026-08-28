@@ -1,6 +1,8 @@
 import { VoiceProviderType, VoiceSettings, ProviderApiKeys, WordTiming } from '../types';
 import { generateSubtitleSegments } from './thaiConverter';
 import { alignSubtitlesToAudio } from './speechAlignmentService';
+import { getFFmpeg } from './ffmpegTranscoder';
+import { fetchFile } from '@ffmpeg/util';
 
 export interface TTSResult {
   audioUrl: string;
@@ -15,6 +17,54 @@ export interface PdVoiceItem {
   name: string;
   is_default: boolean;
   duration_sec?: number;
+}
+
+/**
+ * Accurately adjusts audio playback speed while preserving natural pitch using FFmpeg WASM / Web Audio.
+ */
+export async function adjustAudioSpeedAndDuration(
+  audioBlob: Blob,
+  targetSpeedMultiplier: number
+): Promise<{ blob: Blob; duration: number }> {
+  if (Math.abs(targetSpeedMultiplier - 1.0) < 0.03) {
+    const duration = await getAudioDuration(audioBlob);
+    return { blob: audioBlob, duration };
+  }
+
+  try {
+    const ffmpeg = await getFFmpeg();
+    const inputName = `tts_in_${Date.now()}.mp3`;
+    const outputName = `tts_out_${Date.now()}.wav`;
+
+    await ffmpeg.writeFile(inputName, await fetchFile(audioBlob));
+
+    const clampedSpeed = Math.max(0.5, Math.min(2.0, targetSpeedMultiplier));
+    await ffmpeg.exec([
+      '-i', inputName,
+      '-filter:a', `atempo=${clampedSpeed.toFixed(3)}`,
+      '-ar', '48000',
+      outputName,
+    ]);
+
+    const outputData = await ffmpeg.readFile(outputName);
+
+    try {
+      await ffmpeg.deleteFile(inputName);
+      await ffmpeg.deleteFile(outputName);
+    } catch {}
+
+    const outputBytes = typeof outputData === 'string'
+      ? new TextEncoder().encode(outputData)
+      : new Uint8Array(outputData);
+
+    const adjustedBlob = new Blob([outputBytes.slice().buffer], { type: 'audio/wav' });
+    const duration = await getAudioDuration(adjustedBlob);
+    return { blob: adjustedBlob, duration };
+  } catch (err) {
+    console.warn('Audio speed adjust fallback:', err);
+    const duration = await getAudioDuration(audioBlob);
+    return { blob: audioBlob, duration };
+  }
 }
 
 const isGhPages = () => typeof window !== 'undefined' && window.location.hostname.includes('github.io');
@@ -167,14 +217,14 @@ export async function generateVoiceoverAudio(
         throw new Error(errMsg);
       }
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const duration = await getAudioDuration(audioBlob);
-      const wordTimings = await alignSubtitlesToAudio(text, duration, audioBlob);
+      const rawAudioBlob = await response.blob();
+      const { blob: finalAudioBlob, duration } = await adjustAudioSpeedAndDuration(rawAudioBlob, speed);
+      const audioUrl = URL.createObjectURL(finalAudioBlob);
+      const wordTimings = await alignSubtitlesToAudio(text, duration, finalAudioBlob);
 
       return {
         audioUrl,
-        audioBlob,
+        audioBlob: finalAudioBlob,
         duration,
         wordTimings,
         providerUsed: 'pd_voice'
@@ -216,14 +266,14 @@ export async function generateVoiceoverAudio(
         throw new Error(`MiniMax Error (${response.status}): ${await response.text()}`);
       }
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const duration = await getAudioDuration(audioBlob);
-      const wordTimings = await alignSubtitlesToAudio(text, duration, audioBlob);
+      const rawAudioBlob = await response.blob();
+      const { blob: finalAudioBlob, duration } = await adjustAudioSpeedAndDuration(rawAudioBlob, speed);
+      const audioUrl = URL.createObjectURL(finalAudioBlob);
+      const wordTimings = await alignSubtitlesToAudio(text, duration, finalAudioBlob);
 
       return {
         audioUrl,
-        audioBlob,
+        audioBlob: finalAudioBlob,
         duration,
         wordTimings,
         providerUsed: 'minimax'
@@ -238,17 +288,9 @@ export async function generateVoiceoverAudio(
   if (provider === 'elevenlabs' && apiKeys.elevenlabs.apiKey.trim()) {
     validateElevenLabsKey(apiKeys.elevenlabs.apiKey);
     try {
-      // Thai becomes noticeably less natural at the studio's fast selling
-      // cadence. Keep ElevenLabs Thai in a clearer, provider-safe range.
-      const elevenLabsSpeed = Math.max(0.8, Math.min(1.1, speed));
       const voiceId = apiKeys.elevenlabs.voiceId.trim() || '21m00Tcm4TlvDq8ikWAM';
-      // Multilingual v2 does not include Thai. Transparently migrate projects
-      // that still have the old default to the Thai-capable Eleven v3 model.
       const requestedModel = apiKeys.elevenlabs.model || 'eleven_v3';
       const modelId = requestedModel === 'eleven_multilingual_v2' ? 'eleven_v3' : requestedModel;
-      // Use streaming endpoint to avoid Netlify 26s proxy timeout (504)
-      // Normal /text-to-speech waits until full synthesis -> Thai long script often >26s. Stream starts in <1s.
-      // Note: eleven_v3 does NOT support optimize_streaming_latency (400 unsupported_model), so omit it.
       const endpoint = isGhPages()
         ? `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`
         : `/eleven-api/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`;
@@ -274,7 +316,7 @@ export async function generateVoiceoverAudio(
               similarity_boost: 0.75,
               style: 0.12,
               use_speaker_boost: true,
-              speed: elevenLabsSpeed
+              speed: Math.max(0.8, Math.min(1.25, speed))
             }
           })
         });
@@ -284,21 +326,20 @@ export async function generateVoiceoverAudio(
 
       if (!response.ok) {
         const errBody = await response.text();
-        // Netlify rewrites return HTML on 504, surface the status clearly
         if (response.status === 504) {
-          throw new Error(`ElevenLabs Error (504): Gateway Timeout — ElevenLabs ใช้เวลาสร้างเสียงนานเกิน 26 วินาทีผ่าน Netlify proxy แบบปกติ ได้เปลี่ยนเป็นโหมด streaming แล้ว กรุณาลองใหม่ หรือย่อบทให้สั้นลงเล็กน้อย`);
+          throw new Error(`ElevenLabs Error (504): Gateway Timeout — ElevenLabs ใช้เวลาสร้างเสียงนานเกิน 26 วินาที`);
         }
         throw new Error(`ElevenLabs Error (${response.status}): ${errBody}`);
       }
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const duration = await getAudioDuration(audioBlob);
-      const wordTimings = await alignSubtitlesToAudio(text, duration, audioBlob);
+      const rawAudioBlob = await response.blob();
+      const { blob: finalAudioBlob, duration } = await adjustAudioSpeedAndDuration(rawAudioBlob, speed);
+      const audioUrl = URL.createObjectURL(finalAudioBlob);
+      const wordTimings = await alignSubtitlesToAudio(text, duration, finalAudioBlob);
 
       return {
         audioUrl,
-        audioBlob,
+        audioBlob: finalAudioBlob,
         duration,
         wordTimings,
         providerUsed: 'elevenlabs'
