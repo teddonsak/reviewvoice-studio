@@ -1,14 +1,6 @@
 import { SubtitleSettings, WordTiming } from '../types';
-import {
-  Output,
-  Mp4OutputFormat,
-  BufferTarget,
-  CanvasSource,
-  AudioBufferSource,
-  Quality,
-  canEncodeVideo
-} from 'mediabunny';
-import { transcodeToShopeeCompliantMp4, isPureMp4Container } from './ffmpegTranscoder';
+import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
+import { transcodeToShopeeCompliantMp4 } from './ffmpegTranscoder';
 
 export interface RenderProgressCallback {
   (progressPercent: number, statusMessage: string): void;
@@ -22,30 +14,40 @@ export interface RenderResult {
 }
 
 /**
- * Checks if WebCodecs AudioEncoder supports AAC (mp4a.40.2)
+ * Checks if WebCodecs VideoEncoder & AudioEncoder support H.264 (avc1) & AAC (mp4a.40.2)
  */
-async function isAacWebCodecsSupported(): Promise<boolean> {
-  if (typeof AudioEncoder === 'undefined') return false;
+async function isWebCodecsMp4Supported(width: number, height: number): Promise<boolean> {
+  if (typeof VideoEncoder === 'undefined' || typeof AudioEncoder === 'undefined') {
+    return false;
+  }
   try {
-    const res = await (AudioEncoder as any).isConfigSupported?.({
-      codec: 'mp4a.40.2',
-      sampleRate: 48000,
-      numberOfChannels: 2,
-      bitrate: 192000,
-    });
-    return !!res?.supported;
+    const [videoSupport, audioSupport] = await Promise.all([
+      VideoEncoder.isConfigSupported({
+        codec: 'avc1.42001f', // H.264 Baseline Profile Level 3.1
+        width,
+        height,
+        bitrate: 4_000_000,
+        framerate: 30,
+      }),
+      AudioEncoder.isConfigSupported({
+        codec: 'mp4a.40.2', // AAC-LC
+        sampleRate: 48000,
+        numberOfChannels: 2,
+        bitrate: 128000,
+      }),
+    ]);
+    return !!(videoSupport.supported && audioSupport.supported);
   } catch {
     return false;
   }
 }
 
 /**
- * Universal Studio Video Renderer strictly compliant with Shopee Video & TikTok:
- * 1. Video Codec: H.264 (AVC) Baseline/Main Profile (libx264 / avc1)
- * 2. Audio Codec: AAC (48,000 Hz stereo, >= 128 kbps)
- * 3. MP4 Container & FastStart: Moov atom located at the beginning of the file (web-optimized)
- * 4. Video Geometry: Vertical 9:16 aspect ratio (1080x1920 / 720x1280) at constant 30 FPS
- * 5. MIME Type: Guaranteed video/mp4 for Shopee Video, TikTok, Reels, YouTube Shorts
+ * Universal Studio Video Renderer:
+ * 1. Approach 1 (Preferred): mp4-muxer + WebCodecs VideoEncoder (avc1.42001f) & AudioEncoder (mp4a.40.2) with FastStart in-memory
+ * 2. Approach 2 (Universal Fallback): WebAssembly FFmpeg (libx264 + AAC + yuv420p + faststart)
+ * 
+ * Strict Guarantee: Output is 100% genuine ISO Base Media File (MP4) accepted by Shopee Video and TikTok.
  */
 export async function renderFinalVideo(
   videoSourceUrl: string,
@@ -55,51 +57,54 @@ export async function renderFinalVideo(
   onProgress?: RenderProgressCallback
 ): Promise<RenderResult> {
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
+  const targetWidth = isMobile ? 720 : 1080;
+  const targetHeight = isMobile ? 1280 : 1920;
 
-  // 1. Try High-Speed WebCodecs Hardware Muxer (Desktop Chrome, Edge, Safari 16.4+)
-  if (!isMobile && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined') {
+  // 1. Check if direct WebCodecs + mp4-muxer is supported
+  const canUseMp4Muxer = await isWebCodecsMp4Supported(targetWidth, targetHeight).catch(() => false);
+
+  if (canUseMp4Muxer) {
     try {
-      const [canAvc, canAac] = await Promise.all([
-        canEncodeVideo('avc').catch(() => false),
-        isAacWebCodecsSupported().catch(() => false),
-      ]);
-
-      if (canAvc && canAac) {
-        return await renderWithWebCodecsFastStart(
-          videoSourceUrl,
-          audioBlob,
-          wordTimings,
-          subtitleSettings,
-          onProgress
-        );
-      }
-    } catch (e) {
-      console.warn('WebCodecs render failed, falling back to Universal Hardware Recorder:', e);
+      return await renderWithMp4MuxerWebCodecs(
+        videoSourceUrl,
+        audioBlob,
+        wordTimings,
+        subtitleSettings,
+        targetWidth,
+        targetHeight,
+        onProgress
+      );
+    } catch (err) {
+      console.warn('mp4-muxer WebCodecs failed, transitioning to FFmpeg WASM Transcoder:', err);
     }
   }
 
-  // 2. Universal Hardware Recorder Engine with FFmpeg WASM Transcoder / FastStart (All Mobile & Desktop Browsers)
-  return await renderWithUniversalHardwareEngine(
+  // 2. Approach 2: FFmpeg WASM Transcoder Pipeline (libx264 main + aac + yuv420p + faststart)
+  return await renderWithFfmpegWasmRecorder(
     videoSourceUrl,
     audioBlob,
     wordTimings,
     subtitleSettings,
+    targetWidth,
+    targetHeight,
     onProgress
   );
 }
 
 /**
- * Primary Engine: WebCodecs + Mediabunny FastStart MP4
- * Enforces H.264 AVC Main Profile + AAC 48kHz Stereo + FastStart Moov in-memory.
+ * Approach 1: High-Speed WebCodecs + mp4-muxer
+ * Generates pure ISO MP4 with avc1.42001f (H.264 Baseline) + mp4a.40.2 (AAC) + FastStart in-memory.
  */
-async function renderWithWebCodecsFastStart(
+async function renderWithMp4MuxerWebCodecs(
   videoSourceUrl: string,
   audioBlob: Blob,
   wordTimings: WordTiming[],
   subtitleSettings: SubtitleSettings,
+  targetWidth: number,
+  targetHeight: number,
   onProgress?: RenderProgressCallback
 ): Promise<RenderResult> {
-  onProgress?.(5, 'กำลังเตรียมระบบตัดต่อระดับสตูดิโอ (H.264 AVC + AAC)...');
+  onProgress?.(5, 'กำลังเตรียมระบบเรนเดอร์ (WebCodecs H.264 + AAC + mp4-muxer)...');
 
   // 1. Prepare video element
   const video = document.createElement('video');
@@ -127,24 +132,11 @@ async function renderWithWebCodecsFastStart(
     });
   }
 
-  // 2. Compute exact 9:16 resolution (1080x1920 standard)
-  const rawWidth = video.videoWidth || 1080;
-  const rawHeight = video.videoHeight || 1920;
-  let targetWidth = 1080;
-  let targetHeight = 1920;
-
-  if (rawWidth > 0 && rawHeight > 0) {
-    if (rawWidth / rawHeight < 0.6) {
-      targetWidth = rawWidth % 2 === 0 ? rawWidth : rawWidth - 1;
-      targetHeight = rawHeight % 2 === 0 ? rawHeight : rawHeight - 1;
-    }
-  }
-
   const sourceDuration = isFinite(video.duration) && video.duration > 0 ? video.duration : 10;
 
   onProgress?.(10, 'กำลังถอดรหัสคลื่นเสียงพากย์ (PCM Audio Decoding)...');
 
-  // 3. Decode Audio into 48,000 Hz Stereo
+  // 2. Decode Audio into 48,000 Hz Stereo
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   const audioContext = new AudioContextClass({ sampleRate: 48000 });
   if (audioContext.state === 'suspended') {
@@ -168,7 +160,7 @@ async function renderWithWebCodecsFastStart(
   const timingsDuration = wordTimings.length ? Math.max(...wordTimings.map((t) => t.end)) : 0;
   const finalDuration = Math.max(audioBuffer.duration || sourceDuration, timingsDuration, sourceDuration, 3.5);
 
-  // 4. Setup Canvas
+  // 3. Setup Canvas
   const canvas = document.createElement('canvas');
   canvas.width = targetWidth;
   canvas.height = targetHeight;
@@ -191,40 +183,94 @@ async function renderWithWebCodecsFastStart(
     setTimeout(resolve, 300);
   });
 
-  // 5. Setup Mediabunny Output with FastStart MP4
-  const target = new BufferTarget();
-  const output = new Output({
-    format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
-    target,
+  // 4. Setup mp4-muxer
+  const muxer = new Muxer({
+    target: new ArrayBufferTarget(),
+    video: {
+      codec: 'avc',
+      width: targetWidth,
+      height: targetHeight,
+    },
+    audio: {
+      codec: 'aac',
+      numberOfChannels: 2,
+      sampleRate: 48000,
+    },
+    fastStart: 'in-memory',
+    firstTimestampBehavior: 'offset',
   });
 
-  const videoSource = new CanvasSource(canvas, {
-    codec: 'avc',
-    quality: new Quality('high'),
+  // Setup WebCodecs VideoEncoder
+  let encoderError: Error | null = null;
+  const videoEncoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => {
+      console.error('VideoEncoder error:', e);
+      encoderError = e instanceof Error ? e : new Error(String(e));
+    },
   });
 
-  const audioSource = new AudioBufferSource({
-    codec: 'aac',
-    quality: new Quality('high'),
+  videoEncoder.configure({
+    codec: 'avc1.42001f', // H.264 Baseline Profile Level 3.1
+    width: targetWidth,
+    height: targetHeight,
+    bitrate: 4_000_000,
+    framerate: 30,
+    avc: { format: 'avc' },
   });
 
-  const fps = 30;
-  output.addVideoTrack(videoSource, { frameRate: fps });
-  output.addAudioTrack(audioSource);
+  // Setup WebCodecs AudioEncoder
+  const audioEncoder = new AudioEncoder({
+    output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+    error: (e) => {
+      console.error('AudioEncoder error:', e);
+      encoderError = e instanceof Error ? e : new Error(String(e));
+    },
+  });
 
-  await output.start();
+  audioEncoder.configure({
+    codec: 'mp4a.40.2',
+    numberOfChannels: 2,
+    sampleRate: 48000,
+    bitrate: 128000,
+  });
 
-  // Add AAC Audio Track
-  await audioSource.add(audioBuffer);
-  audioSource.close();
+  // Encode Audio Data into AudioEncoder
+  const sampleRate = audioBuffer.sampleRate;
+  const totalSamples = audioBuffer.length;
+  const chunkSize = 1024;
+  const left = audioBuffer.getChannelData(0);
+  const right = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : left;
+
+  for (let offset = 0; offset < totalSamples; offset += chunkSize) {
+    const count = Math.min(chunkSize, totalSamples - offset);
+    const planarData = new Float32Array(count * 2);
+    planarData.set(left.subarray(offset, offset + count), 0);
+    planarData.set(right.subarray(offset, offset + count), count);
+
+    const audioData = new AudioData({
+      format: 'f32-planar',
+      sampleRate,
+      numberOfFrames: count,
+      numberOfChannels: 2,
+      timestamp: Math.round((offset / sampleRate) * 1_000_000),
+      data: planarData,
+    });
+
+    audioEncoder.encode(audioData);
+    audioData.close();
+  }
 
   onProgress?.(15, 'กำลังเรนเดอร์ภาพและซับไตเติ้ล (Constant 30 FPS H.264)...');
 
-  // 6. Frame-by-Frame Constant 30 FPS Encoding
+  // 5. Frame-by-Frame Video Encoding
+  const fps = 30;
   const totalFrames = Math.ceil(finalDuration * fps);
   const frameDuration = 1 / fps;
 
   for (let i = 0; i < totalFrames; i++) {
+    if (encoderError) throw encoderError;
+
     const currentTime = i * frameDuration;
     const seekTime = sourceDuration > 0 ? currentTime % sourceDuration : currentTime;
 
@@ -236,7 +282,7 @@ async function renderWithWebCodecsFastStart(
           resolve();
         };
         video.addEventListener('seeked', onSeek, { once: true });
-        setTimeout(resolve, 50);
+        setTimeout(resolve, 40);
       });
     }
 
@@ -246,9 +292,16 @@ async function renderWithWebCodecsFastStart(
 
     drawKaraokeSubtitles(ctx, currentTime, wordTimings, subtitleSettings, targetWidth, targetHeight);
 
-    await videoSource.add(currentTime, frameDuration);
+    const frameTimestamp = Math.round(currentTime * 1_000_000);
+    const frame = new VideoFrame(canvas, {
+      timestamp: frameTimestamp,
+      duration: Math.round(frameDuration * 1_000_000),
+    });
 
-    if (i % 6 === 0 || i === totalFrames - 1) {
+    videoEncoder.encode(frame, { keyFrame: i % 60 === 0 });
+    frame.close();
+
+    if (i % 8 === 0 || i === totalFrames - 1) {
       const progressPercent = Math.min(94, Math.round((i / totalFrames) * 80) + 15);
       onProgress?.(
         progressPercent,
@@ -257,12 +310,15 @@ async function renderWithWebCodecsFastStart(
     }
   }
 
-  videoSource.close();
+  onProgress?.(95, 'กำลังบันทึกและจัดระเบียบ Moov Atom (FastStart MP4)...');
 
-  onProgress?.(96, 'กำลังจัดระเบียบหัวไฟล์ MP4 FastStart (Moov Atom at Start)...');
-  await output.finalize();
+  await videoEncoder.flush();
+  await audioEncoder.flush();
+  videoEncoder.close();
+  audioEncoder.close();
+  muxer.finalize();
 
-  const finalBlob = new Blob([target.buffer!], { type: 'video/mp4' });
+  const finalBlob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
   const videoUrl = URL.createObjectURL(finalBlob);
 
   const assContent = generateAssSubtitles(wordTimings, subtitleSettings, targetWidth, targetHeight);
@@ -279,14 +335,18 @@ async function renderWithWebCodecsFastStart(
 }
 
 /**
- * Universal Engine: Hardware-Accelerated Recorder with FFmpeg WASM Transcoder & FastStart
- * Ensures 100% genuine H.264 (libx264) + AAC MP4 with Moov atom at front, ready for Shopee Video and TikTok.
+ * Approach 2: FFmpeg WASM Transcoder Pipeline
+ * Records raw stream and strictly pipes into FFmpeg WASM:
+ * ffmpeg -i input.webm -c:v libx264 -pix_fmt yuv420p -profile:v main -level 3.1 -movflags +faststart -c:a aac -b:a 128k output.mp4
+ * Returns ONLY output.mp4 as a 100% compliant video/mp4 Blob.
  */
-async function renderWithUniversalHardwareEngine(
+async function renderWithFfmpegWasmRecorder(
   videoSourceUrl: string,
   audioBlob: Blob,
   wordTimings: WordTiming[],
   subtitleSettings: SubtitleSettings,
+  targetWidth: number,
+  targetHeight: number,
   onProgress?: RenderProgressCallback
 ): Promise<RenderResult> {
   return new Promise(async (resolve, reject) => {
@@ -296,7 +356,7 @@ async function renderWithUniversalHardwareEngine(
     let bufferSource: AudioBufferSourceNode | null = null;
 
     try {
-      onProgress?.(5, 'กำลังเตรียมระบบเรนเดอร์ (Universal H.264 / AAC Engine)...');
+      onProgress?.(5, 'กำลังเตรียมระบบเรนเดอร์ (FFmpeg WASM Pipeline)...');
 
       // 1. Setup Video Element
       video = document.createElement('video');
@@ -309,7 +369,6 @@ async function renderWithUniversalHardwareEngine(
       video.setAttribute('webkit-playsinline', '');
       video.loop = true;
 
-      // Keep in DOM with active layout so mobile GPU decodes at full 30 FPS
       video.style.position = 'fixed';
       video.style.right = '0';
       video.style.bottom = '0';
@@ -338,13 +397,11 @@ async function renderWithUniversalHardwareEngine(
         });
       }
 
-      const rawWidth = video.videoWidth || 1080;
-      const rawHeight = video.videoHeight || 1920;
       const videoDuration = isFinite(video.duration) && video.duration > 0 ? video.duration : 10;
 
       onProgress?.(12, 'กำลังถอดรหัสคลื่นเสียงพากย์ (PCM Audio Decoding)...');
 
-      // 2. Decode Audio into 48,000 Hz Stereo Web Audio
+      // 2. Setup Web Audio
       const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '');
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       audioContext = new AudioContextClass({ sampleRate: 48000 });
@@ -372,9 +429,7 @@ async function renderWithUniversalHardwareEngine(
       bufferSource.buffer = audioBuffer;
       bufferSource.connect(audioDestination);
 
-      // 3. Setup Canvas (720x1280 on mobile for 100% 30 FPS encoder stability, 1080x1920 on desktop)
-      const targetWidth = isMobile ? Math.min(rawWidth, 720) : rawWidth;
-      const targetHeight = isMobile ? Math.round((targetWidth / rawWidth) * rawHeight) : rawHeight;
+      // 3. Setup Canvas
       const canvasWidth = targetWidth % 2 === 0 ? targetWidth : targetWidth - 1;
       const canvasHeight = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1;
 
@@ -394,7 +449,7 @@ async function renderWithUniversalHardwareEngine(
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('ไม่สามารถสร้าง Canvas Context ได้');
 
-      // Pre-warm and render frame 0 onto canvas BEFORE starting recording (0 black frames)
+      // Pre-warm frame 0
       video.currentTime = 0;
       await new Promise<void>((resolve) => {
         let attempts = 0;
@@ -428,28 +483,9 @@ async function renderWithUniversalHardwareEngine(
         ...audioDestination.stream.getAudioTracks(),
       ]);
 
-      // 5. Select Best Strict H.264 / AVC + AAC MIME Type
-      const candidates = [
-        'video/mp4;codecs=avc1.4D401F,mp4a.40.2', // H.264 Main Profile + AAC LC
-        'video/mp4;codecs=avc1.42E01E,mp4a.40.2', // H.264 Baseline Profile + AAC LC
-        'video/mp4;codecs=avc1,mp4a.40.2',
-        'video/mp4;codecs=avc1',
-        'video/mp4',
-        'video/webm;codecs=vp9,opus',
-        'video/webm',
-      ];
-
-      const mimeType =
-        candidates.find((t) => {
-          try {
-            return (window as any).MediaRecorder && MediaRecorder.isTypeSupported(t);
-          } catch {
-            return false;
-          }
-        }) || 'video/mp4';
-
+      // Record into raw WebM buffer
       const recorder = new MediaRecorder(combinedStream, {
-        mimeType,
+        mimeType: 'video/webm',
         videoBitsPerSecond: isMobile ? 3500000 : 7000000,
         audioBitsPerSecond: 192000,
       });
@@ -475,22 +511,14 @@ async function renderWithUniversalHardwareEngine(
           if (video && video.parentNode) document.body.removeChild(video);
         } catch {}
 
-        onProgress?.(90, 'กำลังตรวจสอบโครงสร้างไฟล์ MP4...');
+        onProgress?.(88, 'กำลังส่งเข้า FFmpeg WASM เพื่อแปลงเป็น ISO H.264/AAC MP4 แท้...');
 
-        const rawBlob = new Blob(recordedChunks, { type: mimeType.split(';')[0] || 'video/mp4' });
-        let finalBlob: Blob;
-
-        // Check if rawBlob is already a pure ISO MP4 container
-        const isPureMp4 = await isPureMp4Container(rawBlob);
-        if (!isPureMp4 || mimeType.includes('webm')) {
-          onProgress?.(91, 'กำลังแปลงไฟล์ด้วย FFmpeg WASM (H.264 Main + AAC FastStart)...');
-          finalBlob = await transcodeToShopeeCompliantMp4(rawBlob, onProgress);
-        } else {
-          onProgress?.(96, 'กำลังจัดระเบียบหัวไฟล์ MP4 FastStart (Moov Atom at Start)...');
-          finalBlob = await fixMp4FastStartAndDuration(rawBlob, finalDuration);
-        }
-
+        const rawWebmBlob = new Blob(recordedChunks, { type: 'video/webm' });
+        
+        // Strictly transcode raw WebM with FFmpeg libx264 + AAC + yuv420p + faststart
+        const finalBlob = await transcodeToShopeeCompliantMp4(rawWebmBlob, onProgress);
         const videoUrl = URL.createObjectURL(finalBlob);
+
         const assContent = generateAssSubtitles(wordTimings, subtitleSettings, canvasWidth, canvasHeight);
         const srtContent = generateSrtSubtitles(wordTimings);
 
@@ -507,7 +535,7 @@ async function renderWithUniversalHardwareEngine(
         reject(new Error(`เกิดข้อผิดพลาดในการบันทึกวิดีโอ: ${err.toString()}`));
       };
 
-      // 6. Start Playback & Recording synchronously
+      // 5. Start Playback & Recording
       video.currentTime = 0;
       await video.play().catch(() => {});
       recorder.start(100);
@@ -519,7 +547,7 @@ async function renderWithUniversalHardwareEngine(
         if (!recorder || recorder.state !== 'recording' || !ctx || !video || !canvas) return;
 
         const elapsed = (performance.now() - startTime) / 1000;
-        const progress = Math.min(88, Math.round((elapsed / finalDuration) * 75) + 15);
+        const progress = Math.min(85, Math.round((elapsed / finalDuration) * 70) + 15);
         onProgress?.(
           progress,
           `กำลังเรนเดอร์ภาพและเสียงพากย์ (${Math.round(elapsed)}s / ${Math.round(finalDuration)}s)...`
@@ -561,138 +589,6 @@ async function renderWithUniversalHardwareEngine(
 }
 
 /**
- * Pure TypeScript FastStart & Duration Optimizer (equivalent to -movflags +faststart):
- * 1. Parses MP4 atom hierarchy
- * 2. Injects exact duration into mvhd, tkhd, and mdhd boxes
- * 3. Relocates the 'moov' atom before 'mdat' and updates stco/co64 chunk offsets
- * 4. Ensures 100% acceptance by Shopee Video, TikTok, Facebook Reels, and IG Reels.
- */
-export async function fixMp4FastStartAndDuration(blob: Blob, durationSeconds: number): Promise<Blob> {
-  try {
-    const buffer = await blob.arrayBuffer();
-    const view = new DataView(buffer);
-    const bytes = new Uint8Array(buffer);
-
-    let moovOffset = -1;
-    let moovSize = 0;
-    let mdatOffset = -1;
-
-    // Scan top-level boxes
-    let pos = 0;
-    while (pos < bytes.length - 8) {
-      const boxSize = view.getUint32(pos);
-      const boxType = String.fromCharCode(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]);
-      const actualSize = boxSize === 1 ? Number(view.getBigUint64(pos + 8)) : boxSize;
-
-      if (boxType === 'moov') {
-        moovOffset = pos;
-        moovSize = actualSize;
-      } else if (boxType === 'mdat') {
-        mdatOffset = pos;
-      }
-
-      if (actualSize <= 0 || pos + actualSize > bytes.length) break;
-      pos += actualSize;
-    }
-
-    // 1. Patch durations inside moov
-    for (let i = 0; i < bytes.length - 32; i++) {
-      // 'mvhd'
-      if (bytes[i] === 0x6d && bytes[i + 1] === 0x76 && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64) {
-        const version = view.getUint8(i + 4);
-        const timescaleOffset = i + 4 + 4 + (version === 1 ? 16 : 8);
-        const durationOffset = timescaleOffset + 4;
-        const timescale = view.getUint32(timescaleOffset);
-
-        if (timescale > 0 && timescale < 10000000) {
-          const durationUnits = Math.round(durationSeconds * timescale);
-          if (version === 1) {
-            try {
-              view.setBigUint64(durationOffset, BigInt(durationUnits));
-            } catch {}
-          } else {
-            view.setUint32(durationOffset, durationUnits);
-          }
-        }
-      }
-
-      // 'tkhd'
-      if (bytes[i] === 0x74 && bytes[i + 1] === 0x6b && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64) {
-        const version = view.getUint8(i + 4);
-        const durationOffset = i + 4 + 4 + (version === 1 ? 16 : 8) + 8;
-        const durationUnits = Math.round(durationSeconds * 1000);
-        if (version === 1) {
-          try {
-            view.setBigUint64(durationOffset, BigInt(durationUnits));
-          } catch {}
-        } else {
-          view.setUint32(durationOffset, durationUnits);
-        }
-      }
-
-      // 'mdhd'
-      if (bytes[i] === 0x6d && bytes[i + 1] === 0x64 && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64) {
-        const version = view.getUint8(i + 4);
-        const timescaleOffset = i + 4 + 4 + (version === 1 ? 16 : 8);
-        const durationOffset = timescaleOffset + 4;
-        const timescale = view.getUint32(timescaleOffset);
-
-        if (timescale > 0 && timescale < 10000000) {
-          const durationUnits = Math.round(durationSeconds * timescale);
-          if (version === 1) {
-            try {
-              view.setBigUint64(durationOffset, BigInt(durationUnits));
-            } catch {}
-          } else {
-            view.setUint32(durationOffset, durationUnits);
-          }
-        }
-      }
-    }
-
-    // 2. If moov is located after mdat, perform FastStart shift (move moov before mdat)
-    if (moovOffset > 0 && mdatOffset >= 0 && moovOffset > mdatOffset && moovSize > 0) {
-      // Adjust stco / co64 chunk offsets by adding moovSize
-      for (let i = moovOffset; i < moovOffset + moovSize - 8; i++) {
-        // 'stco' (32-bit chunk offsets)
-        if (bytes[i] === 0x73 && bytes[i + 1] === 0x74 && bytes[i + 2] === 0x63 && bytes[i + 3] === 0x6f) {
-          const entryCount = view.getUint32(i + 8);
-          let offsetPos = i + 12;
-          for (let j = 0; j < entryCount && offsetPos < moovOffset + moovSize - 4; j++) {
-            const currentOffset = view.getUint32(offsetPos);
-            view.setUint32(offsetPos, currentOffset + moovSize);
-            offsetPos += 4;
-          }
-        }
-        // 'co64' (64-bit chunk offsets)
-        if (bytes[i] === 0x63 && bytes[i + 1] === 0x6f && bytes[i + 2] === 0x36 && bytes[i + 3] === 0x34) {
-          const entryCount = view.getUint32(i + 8);
-          let offsetPos = i + 12;
-          for (let j = 0; j < entryCount && offsetPos < moovOffset + moovSize - 8; j++) {
-            const currentOffset = view.getBigUint64(offsetPos);
-            view.setBigUint64(offsetPos, currentOffset + BigInt(moovSize));
-            offsetPos += 8;
-          }
-        }
-      }
-
-      // Reconstruct buffer: [header_up_to_mdat, moov, mdat_and_rest]
-      const ftypAndPrefix = bytes.slice(0, mdatOffset);
-      const moovBytes = bytes.slice(moovOffset, moovOffset + moovSize);
-      const mdatBytes = bytes.slice(mdatOffset, moovOffset);
-      const postMoovBytes = bytes.slice(moovOffset + moovSize);
-
-      return new Blob([ftypAndPrefix, moovBytes, mdatBytes, postMoovBytes], { type: 'video/mp4' });
-    }
-
-    return new Blob([buffer], { type: 'video/mp4' });
-  } catch (err) {
-    console.warn('fixMp4FastStartAndDuration fallback:', err);
-    return blob;
-  }
-}
-
-/**
  * Draws crisp, natural Thai subtitles with contiguous script,
  * clean stroke outline, karaoke highlight, and accurate position coordinates.
  * Strictly calculates active word highlight based on real-time speech timing + offset.
@@ -707,7 +603,6 @@ export function drawKaraokeSubtitles(
 ) {
   if (!wordTimings || wordTimings.length === 0) return;
 
-  // Apply real-time subtitle sync offset compensation (in ms)
   const offsetSeconds = (settings.syncOffsetMs || 0) / 1000;
   const effectiveTime = currentTime + offsetSeconds;
 

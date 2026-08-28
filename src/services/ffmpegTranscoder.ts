@@ -45,25 +45,37 @@ export async function getFFmpeg(onProgress?: (ratio: number, msg: string) => voi
     onProgress?.(percent, `กำลังแปลงไฟล์ H.264/AAC ด้วย FFmpeg (${percent}%)...`);
   });
 
-  try {
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
-    ffmpegInstance = ffmpeg;
-    return ffmpeg;
-  } finally {
-    isFfmpegLoading = false;
+  const cdnList = [
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm',
+    'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm',
+  ];
+
+  let lastError: any = null;
+  for (const baseURL of cdnList) {
+    try {
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      ffmpegInstance = ffmpeg;
+      isFfmpegLoading = false;
+      return ffmpeg;
+    } catch (e) {
+      lastError = e;
+      console.warn(`Failed loading FFmpeg from ${baseURL}, trying next...`, e);
+    }
   }
+
+  isFfmpegLoading = false;
+  throw new Error(`ไม่สามารถโหลดเอนจิน FFmpeg WASM ได้: ${lastError?.message || 'Network error'}`);
 }
 
 /**
  * Transcodes any video Blob into a 100% compliant Shopee Video & TikTok MP4:
- * - Video Codec: H.264 (libx264) Main Profile
+ * - Video Codec: H.264 (libx264) Main Profile Level 3.1
  * - Pixel Format: yuv420p
  * - Frame Rate: 30 FPS Constant (CFR)
- * - Audio Codec: AAC Stereo 48,000 Hz (192 kbps)
+ * - Audio Codec: AAC Stereo 48,000 Hz (128 kbps)
  * - Flags: -movflags +faststart (Moov Atom at start of file)
  * - Output MIME: video/mp4
  */
@@ -71,52 +83,50 @@ export async function transcodeToShopeeCompliantMp4(
   inputBlob: Blob,
   onProgress?: (percent: number, status: string) => void
 ): Promise<Blob> {
+  onProgress?.(91, 'กำลังเตรียม FFmpeg WASM Transcoder (Shopee Video & TikTok Standard)...');
+
+  const ffmpeg = await getFFmpeg((ratio, msg) => {
+    const p = Math.min(99, Math.max(91, 91 + Math.round(ratio * 0.08)));
+    onProgress?.(p, msg);
+  });
+
+  const isWebm = inputBlob.type.includes('webm') || !(await isPureMp4Container(inputBlob));
+  const inputName = `input_${Date.now()}${isWebm ? '.webm' : '.mp4'}`;
+  const outputName = `shopee_output_${Date.now()}.mp4`;
+
+  await ffmpeg.writeFile(inputName, await fetchFile(inputBlob));
+
+  onProgress?.(93, 'กำลังเข้ารหัสวิดีโอ H.264 (libx264 Main) + เสียง AAC 48kHz...');
+
+  // Strict Shopee Video & TikTok Command:
+  // ffmpeg -i input.webm -c:v libx264 -pix_fmt yuv420p -profile:v main -level 3.1 -movflags +faststart -c:a aac -b:a 128k output.mp4
+  await ffmpeg.exec([
+    '-i', inputName,
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-profile:v', 'main',
+    '-level', '3.1',
+    '-preset', 'ultrafast',
+    '-r', '30',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-ar', '48000',
+    '-movflags', '+faststart',
+    outputName,
+  ]);
+
+  const outputData = await ffmpeg.readFile(outputName);
+
+  // Clean virtual file system
   try {
-    onProgress?.(91, 'กำลังเตรียม FFmpeg WASM Transcoder (Shopee Video & TikTok Standard)...');
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
+  } catch {}
 
-    const ffmpeg = await getFFmpeg((ratio, msg) => {
-      const p = Math.min(99, Math.max(91, 91 + Math.round(ratio * 0.08)));
-      onProgress?.(p, msg);
-    });
+  const outputBytes = typeof outputData === 'string'
+    ? new TextEncoder().encode(outputData)
+    : new Uint8Array(outputData);
 
-    const isWebm = inputBlob.type.includes('webm');
-    const inputName = `input_${Date.now()}${isWebm ? '.webm' : '.mp4'}`;
-    const outputName = `shopee_output_${Date.now()}.mp4`;
-
-    await ffmpeg.writeFile(inputName, await fetchFile(inputBlob));
-
-    onProgress?.(93, 'กำลังเข้ารหัสวิดีโอ H.264 (libx264) + เสียง AAC 48kHz...');
-
-    await ffmpeg.exec([
-      '-i', inputName,
-      '-c:v', 'libx264',
-      '-profile:v', 'main',
-      '-preset', 'ultrafast',
-      '-pix_fmt', 'yuv420p',
-      '-r', '30',
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-ar', '48000',
-      '-movflags', '+faststart',
-      outputName,
-    ]);
-
-    const outputData = await ffmpeg.readFile(outputName);
-
-    // Clean virtual file system
-    try {
-      await ffmpeg.deleteFile(inputName);
-      await ffmpeg.deleteFile(outputName);
-    } catch {}
-
-    const outputBytes = typeof outputData === 'string'
-      ? new TextEncoder().encode(outputData)
-      : new Uint8Array(outputData);
-
-    const finalMp4Blob = new Blob([outputBytes.slice().buffer], { type: 'video/mp4' });
-    return finalMp4Blob;
-  } catch (err) {
-    console.warn('FFmpeg WASM transcode error, returning patched container blob:', err);
-    return inputBlob;
-  }
+  const finalMp4Blob = new Blob([outputBytes.slice().buffer], { type: 'video/mp4' });
+  return finalMp4Blob;
 }
