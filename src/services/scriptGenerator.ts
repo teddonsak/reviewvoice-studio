@@ -69,7 +69,6 @@ export const SAMPLE_TEMPLATES: ScriptTemplate[] = [
 ];
 
 export function analyzeProductDetails(nameOrText: string): ProductAnalysis {
-  // If matches template
   const match = SAMPLE_TEMPLATES.find(t => 
     t.productName.toLowerCase().includes(nameOrText.toLowerCase()) || 
     t.name.toLowerCase().includes(nameOrText.toLowerCase())
@@ -85,27 +84,38 @@ export function analyzeProductDetails(nameOrText: string): ProductAnalysis {
     };
   }
 
-  // Smart analysis fallback
   const cleanName = nameOrText.trim() || 'สินค้าพรีเมียมตัวดัง';
   return {
     productName: cleanName,
-    painPoint: 'ผู้ใช้ประสบปัญหาการใช้งานในชีวิตประจำวัน ต้องการตัวช่วยที่คุ้มค่า เห็นผลไว และประหยัดเวลา',
+    painPoint: 'เจอปัญหาการใช้งานเดิมๆ ที่แก้ไม่หาย เสียทั้งเงินและเวลา อยากได้ตัวช่วยที่เห็นผลจริงและคุ้มค่า',
     features: [
-      `ฟังก์ชันตอบโจทย์การใช้งานจริง ดีไซน์ทันสมัย ใช้งานง่าย`,
-      `ผลิตจากวัตถุดิบและวัสดุคุณภาพสูง ปลอดภัยได้มาตรฐาน`,
-      `คุ้มค่าคุ้มราคา มีการรับประกันและรีวิวจากผู้ใช้จริงมากมาย`
+      `ดีไซน์ตอบโจทย์ ใช้งานง่าย พกพาสะดวก`,
+      `ผลิตจากวัสดุคุณภาพสูง ทนทาน ได้มาตรฐานสากล`,
+      `การันตีรีวิวผู้ใช้จริงเพียบ คุ้มค่าคุ้มราคา`
     ],
     targetAudience: 'ผู้บริโภคยุคใหม่ที่มองหาสินค้าคุณภาพดี คุ้มค่า และแก้ปัญหาได้ตรงจุด',
-    usp: `จุดเด่นที่แตกต่างคือคุณภาพระดับพรีเมียม ตอบโจทย์คนไทยในราคาที่เข้าถึงได้จริง`,
+    usp: `คุณภาพเกรดพรีเมียม ตอบโจทย์คนไทยในราคาที่จับต้องได้จริง`,
   };
 }
 
+/**
+ * High-Converting Copywriting Generator for TikTok & Shopee Video:
+ * Formulates scripts tailored to target duration (15s, 30s, 45s, 60s, 90s)
+ * and sales psychology style (Trendy, Direct Sales, Expert, Storytelling, Fast Hook).
+ */
 export function generateReviewScript(
   analysis: ProductAnalysis,
   tone: 'cheerful' | 'friendly' | 'confident' | 'energetic' = 'cheerful',
-  gender: 'female' | 'male' = 'female'
+  gender: 'female' | 'male' = 'female',
+  copywritingStyle: 'trendy_influencer' | 'direct_sales' | 'expert' | 'storytelling' | 'fast_hook' = 'trendy_influencer',
+  targetDurationSeconds: number = 30,
+  speed: number = 1.22
 ): ReviewScript {
-  const { productName, painPoint, features, targetAudience: _targetAudience, usp } = analysis;
+  const { productName, painPoint, features, usp } = analysis;
+
+  const f1 = features[0] || 'ฟังก์ชันครบครัน';
+  const f2 = features[1] || 'ใช้งานง่าย สะดวกสบาย';
+  const f3 = features[2] || 'คุณภาพระดับพรีเมียม';
 
   let hook = '';
   let problem = '';
@@ -113,40 +123,58 @@ export function generateReviewScript(
   let proof = '';
   let cta = '';
 
-  const f1 = features[0] || 'ฟังก์ชันครบครัน';
-  const f2 = features[1] || 'ใช้งานง่าย สะดวกสบาย';
-  const f3 = features[2] || 'คุณภาพระดับพรีเมียม';
-
-  switch (tone) {
-    case 'energetic': // ป้ายยา โปรโมชั่นแรง ตื่นเต้น
-      hook = `ทุกคนขา! ใครที่กำลังเจอกับปัญหา ${painPoint} ต้องหยุดดูคลิปนี้ด่วนๆ เลยค่ะ!`;
-      problem = `เข้าใจเลยค่ะว่าปัญหานี้มันน่ารำคาญใจแค่ไหน ลองมาหลายวิธีก็ยังไม่ตอบโจทย์สักที`;
-      solution = `จนมาเจอตัวนี้เลยค่ะ ${productName} บอกเลยว่าปังมาก เพราะเค้ามาพร้อม ${f1} แถมยังมี ${f2} และที่ชอบที่สุดคือ ${f3}`;
-      proof = `จุดเด่นของเค้าคือ ${usp} ลองใช้เองแล้วประทับใจสุดๆ ดีจริงไม่จกตาเลยค่ะ`;
-      cta = `ตอนนี้มีโปรโมชั่นพิเศษอยู่นะคะ รีบกดที่ตะกร้าสีเหลืองด้านซ้าย หรือคลิกลิงก์ใต้คลิปนี้ก่อนของจะหมดได้เลยค่ะ!`;
-      break;
-
-    case 'confident': // มั่นใจ ผู้เชี่ยวชาญ น่าเชื่อถือ
-      hook = `ถ้าคุณกำลังมองหาทางออกของปัญหา ${painPoint} วันนี้มีไอเทมเด็ดมาแนะนำค่ะ`;
-      problem = `หลายคนอาจจะเคยเจอปัญหาเหล่านี้จนเสียทั้งเงินและเวลา แต่ก็ยังไม่เจอตัวที่ใช่`;
-      solution = `ขอแนะนำ ${productName} ที่ออกแบบมาเพื่อแก้ปัญหานี้โดยเฉพาะ จุดเด่นคือ ${f1} ผสานคุณสมบัติ ${f2} และ ${f3}`;
-      proof = `ด้วย ${usp} จึงมั่นใจได้ในผลลัพธ์และความปลอดภัย คุ้มค่าทุกบาทแน่นอนค่ะ`;
-      cta = `สำหรับใครที่สนใจ สามารถกดสั่งซื้อผ่านตะกร้าสีเหลืองหรือลิงก์หน้าโปรไฟล์ได้เลยนะคะ แนะนำว่าต้องมีติดบ้านไว้ค่ะ`;
-      break;
-
-    case 'cheerful': // หญิงสดใส เป็นกันเอง (Default)
-    default:
-      hook = `ใครที่เจอปัญหานี้อยู่เหมือนกันบ้างคะ? กับ ${painPoint} วันนี้มีของดีมาบอกต่อค่ะ!`;
-      problem = `บอกเลยว่าเมื่อก่อนปวดหัวกับเรื่องนี้มาก ลองมาหลายตัวก็ยังไม่เวิร์ก`;
-      solution = `แต่พอได้มาลอง ${productName} คือชีวิตเปลี่ยนเลยค่ะ เค้ามี ${f1} แล้วก็ยังมี ${f2} บอกเลยว่า ${f3} เลิฟมากๆ`;
-      proof = `ที่สำคัญคือ ${usp} ใช้แล้วเห็นผลจริง สัมผัสได้ถึงความแตกต่างตั้งแต่ครั้งแรกๆ เลยค่ะ`;
-      cta = `ใครอยากได้ แปะพิกัดไว้ที่ตะกร้าสีเหลืองมุมซ้ายล่างแล้วนะคะ กดสั่งตอนนี้ส่งฟรี รีบไปตำกันน้า!`;
-      break;
+  // 1. Script Styles based on Copywriting Strategy
+  if (copywritingStyle === 'fast_hook' || targetDurationSeconds <= 20) {
+    // ⚡ 15-20s Fast Hook (Short & Punchy)
+    hook = `หยุดดูด่วน! ใครเจอปัญหา ${painPoint} ฟังทางนี้เลยค่ะ`;
+    problem = `ไม่ต้องทนหงุดหงิดอีกต่อไป`;
+    solution = `เพราะมี ${productName} ตัวนี้ ตัวเดียวจบ มาพร้อม ${f1}`;
+    proof = `การันตีด้วย ${usp} ปังจริงไม่จกตา`;
+    cta = `พิกัดในตะกร้าสีเหลืองมุมซ้ายล่าง รีบกดก่อนหมดโปรนะคะ!`;
+  } else if (copywritingStyle === 'direct_sales') {
+    // 🔥 Direct Sales / Flash Sale (กระตุ้นโปรแรง ปิดการขายไว)
+    hook = `ทุกคนขา! ใครที่กำลังอยากแก้ปัญหา ${painPoint} ต้องรีบดูคลิปนี้ให้จบเลยค่ะ!`;
+    problem = `บอกเลยว่าอย่าปล่อยไว้นานจนเสียเงินเปล่า ลองมาหลายตัวก็ไม่ตอบโจทย์`;
+    solution = `จนมาเจอ ${productName} บอกเลยว่าตอบโจทย์มาก เพราะเค้าจัดเต็ม ${f1} แถมยังมี ${f2} ใช้งานสะดวกสุดๆ`;
+    proof = `จุดเด่นคือ ${usp} คนใช้จริงรีวิวเพียบ คุ้มค่าทุกบาทแน่นอนค่ะ`;
+    cta = `ตอนนี้กำลังจัดโปรโมชั่นลดพิเศษอยู่นะคะ รีบกดที่ตะกร้าสีเหลืองด้านซ้ายก่อนของจะหมดได้เลยค่ะ!`;
+  } else if (copywritingStyle === 'expert') {
+    // 💎 Expert & Authority (ผู้เชี่ยวชาญ เจาะลึก น่าเชื่อถือ)
+    hook = `ถ้าคุณกำลังมองหาวิธีแก้ปัญหา ${painPoint} อย่างตรงจุด คลิปนี้มีคำตอบให้ค่ะ`;
+    problem = `หลายคนอาจเคยเสียเวลาลองผิดลองถูกกับสินค้าที่ไม่ได้มาตรฐาน`;
+    solution = `ขอแนะนำ ${productName} ที่ออกแบบมาเพื่อแก้ปัญหานี้โดยเฉพาะ จุดเด่นคือ ${f1} ผสานคุณสมบัติ ${f2} และ ${f3}`;
+    proof = `ด้วย ${usp} จึงมั่นใจได้ในผลลัพธ์และความปลอดภัยสูงสุดค่ะ`;
+    cta = `สำหรับใครที่สนใจ สามารถกดสั่งซื้อผ่านตะกร้าสีเหลืองมุมซ้ายล่างได้ทันที มีรับประกันสินค้าของแท้ 100% ค่ะ`;
+  } else if (copywritingStyle === 'storytelling') {
+    // 🎭 Storytelling (เล่าเรื่องเปลี่ยนชีวิต จากปัญหาสู่ความประทับใจ)
+    hook = `ใครที่เจอปัญหานี้เหมือนกันบ้างคะ? กับ ${painPoint} วันนี้มีของดีมาบอกต่อค่ะ!`;
+    problem = `เมื่อก่อนเครียดกับเรื่องนี้มาก ลองมาสารพัดวิธีก็ยังไม่เวิร์ก`;
+    solution = `แต่พอได้เปิดใจลอง ${productName} บอกเลยว่าชีวิตเปลี่ยนมาก เค้ามี ${f1} แล้วก็ยังมี ${f2} บอกเลยว่า ${f3} ประทับใจสุดๆ`;
+    proof = `ที่สำคัญคือ ${usp} ใช้แล้วเห็นผลชัดเจน สัมผัสได้ถึงความเปลี่ยนแปลงทันทีค่ะ`;
+    cta = `ใครอยากได้ แปะพิกัดไว้ที่ตะกร้าสีเหลืองมุมซ้ายล่างแล้วนะคะ กดสั่งตอนนี้ส่งฟรี รีบไปตำกันน้า!`;
+  } else {
+    // 🌟 Trendy Influencer (ป้ายยาตัวแม่ เป็นกันเอง เล่าสนุก - Default)
+    if (targetDurationSeconds >= 45) {
+      hook = `ทุกคนนน! ใครที่กำลังปวดหัวกับปัญหา ${painPoint} ต้องหยุดดูคลิปนี้ด่วนๆ เลยค่ะ!`;
+      problem = `เข้าใจความรู้สึกเลยค่ะว่ามันน่ารำคาญใจแค่ไหน เสียเงินซื้อมาลองตั้งเยอะก็ยังไม่โดนใจสักที`;
+      solution = `จนเพื่อนมาป้ายยาตัวนี้ค่ะ ${productName} บอกเลยว่าเลิฟมากก เค้ามาพร้อม ${f1} แถมยังมี ${f2} และที่ชอบมากๆ คือ ${f3}`;
+      proof = `จุดเด่นที่แตกต่างคือ ${usp} ลองใช้เองแล้วติดใจ ดีจริงแบบไม่อวยเลยค่ะ`;
+      cta = `แปะพิกัดของแท้พร้อมโปรส่งฟรีไว้ที่ตะกร้าสีเหลืองมุมซ้ายล่างแล้วนะคะ รีบกดใส่ตะกร้าก่อนโปรจะหมดน้า!`;
+    } else {
+      hook = `ใครเจอปัญหา ${painPoint} ต้องหยุดดูคลิปนี้ด่วนเลยค่ะ!`;
+      problem = `เข้าใจเลยค่ะว่ามันน่ารำคาญใจ ลองมาเยอะก็ยังไม่หาย`;
+      solution = `จนมาเจอ ${productName} บอกเลยว่าปังมาก มี ${f1} แถมยังมี ${f2}`;
+      proof = `จุดเด่นคือ ${usp} ใช้แล้วประทับใจมาก ดีจริงไม่จกตาค่ะ`;
+      cta = `แปะพิกัดไว้ที่ตะกร้าสีเหลืองมุมซ้ายล่างแล้วนะคะ รีบกดสั่งได้เลยน้า!`;
+    }
   }
 
+  // Adjust for Male voiceover
   if (gender === 'male') {
     const toMaleVoice = (value: string) => value
       .replace(/ทุกคนขา/g, 'ทุกคนครับ')
+      .replace(/ทุกคนนน/g, 'ทุกคนครับ')
+      .replace(/แกรรรร/g, 'ทุกคนครับ')
       .replace(/นะคะ|ค่ะ|คะ|น้า/g, 'ครับ')
       .replace(/เค้า/g, 'ตัวนี้');
     hook = toMaleVoice(hook);
@@ -156,12 +184,14 @@ export function generateReviewScript(
     cta = toMaleVoice(cta);
   }
 
-  const fullText = `${hook} ${problem} ${solution} ${proof} ${cta}`;
+  const fullText = `${hook} ${problem} ${solution} ${proof} ${cta}`.trim();
   const words = fullText.split(/[\s,]+/).filter(w => w.length > 0);
   const wordCount = words.length;
 
-  // Thai average reading speed: ~150-180 words/min -> roughly ~2.8 words/sec at 1.22x speed
-  const estimatedDurationSeconds = Math.max(10, Math.round(wordCount / 2.8));
+  // Thai accurate duration calculation:
+  // Base speech rate: ~10.5 Thai characters per second at 1.0x speed
+  const thaiChars = (fullText.match(/[\u0E00-\u0E7F0-9A-Za-z]/g) || []).length;
+  const estimatedDurationSeconds = Math.max(5, Math.round(thaiChars / (10.5 * Math.max(0.8, speed))));
 
   return {
     hook,
@@ -172,6 +202,8 @@ export function generateReviewScript(
     fullText,
     wordCount,
     estimatedDurationSeconds,
+    targetDurationSeconds,
+    copywritingStyle,
   };
 }
 

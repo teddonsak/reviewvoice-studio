@@ -19,6 +19,8 @@ export interface ReviewScript {
   fullText: string;
   wordCount: number;
   estimatedDurationSeconds: number;
+  targetDurationSeconds?: number; // Target length: 15, 30, 45, 60, 90s
+  copywritingStyle?: 'trendy_influencer' | 'direct_sales' | 'expert' | 'storytelling' | 'fast_hook';
 }
 
 export interface DualScript {
