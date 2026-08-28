@@ -85,6 +85,7 @@ export interface SubtitleSettings {
   fontWeight?: '400' | '600' | '700' | '800' | '900'; // default '800'
   fontFamily: string; // 'Kanit', 'Prompt', 'Mitr', 'Itim', 'Chakra Petch', 'Noto Sans Thai', 'Sarabun', 'Pattaya', 'Charm'
   showBadge: boolean;
+  syncOffsetMs?: number; // Delay / offset compensation in milliseconds (-500 to +500 ms)
   customFontUrl?: string;
   customFontName?: string;
 }

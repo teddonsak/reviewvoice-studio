@@ -8,6 +8,7 @@ import {
   Quality,
   canEncodeVideo
 } from 'mediabunny';
+import { transcodeToShopeeCompliantMp4, isPureMp4Container } from './ffmpegTranscoder';
 
 export interface RenderProgressCallback {
   (progressPercent: number, statusMessage: string): void;
@@ -39,8 +40,8 @@ async function isAacWebCodecsSupported(): Promise<boolean> {
 }
 
 /**
- * Universal Studio Video Renderer strictly compliant with:
- * 1. Video Codec: H.264 (AVC) Baseline/Main Profile
+ * Universal Studio Video Renderer strictly compliant with Shopee Video & TikTok:
+ * 1. Video Codec: H.264 (AVC) Baseline/Main Profile (libx264 / avc1)
  * 2. Audio Codec: AAC (48,000 Hz stereo, >= 128 kbps)
  * 3. MP4 Container & FastStart: Moov atom located at the beginning of the file (web-optimized)
  * 4. Video Geometry: Vertical 9:16 aspect ratio (1080x1920 / 720x1280) at constant 30 FPS
@@ -77,7 +78,7 @@ export async function renderFinalVideo(
     }
   }
 
-  // 2. Universal Hardware Recorder Engine with Binary FastStart & Duration Patch (All Mobile & Desktop Browsers)
+  // 2. Universal Hardware Recorder Engine with FFmpeg WASM Transcoder / FastStart (All Mobile & Desktop Browsers)
   return await renderWithUniversalHardwareEngine(
     videoSourceUrl,
     audioBlob,
@@ -133,7 +134,6 @@ async function renderWithWebCodecsFastStart(
   let targetHeight = 1920;
 
   if (rawWidth > 0 && rawHeight > 0) {
-    // Preserve 9:16 target
     if (rawWidth / rawHeight < 0.6) {
       targetWidth = rawWidth % 2 === 0 ? rawWidth : rawWidth - 1;
       targetHeight = rawHeight % 2 === 0 ? rawHeight : rawHeight - 1;
@@ -279,8 +279,8 @@ async function renderWithWebCodecsFastStart(
 }
 
 /**
- * Universal Engine: Hardware-Accelerated Recorder with Binary FastStart + Duration Optimizer
- * Works on 100% of Android and iOS mobile devices, ensuring H.264/AVC + AAC MP4 with FastStart moov atom.
+ * Universal Engine: Hardware-Accelerated Recorder with FFmpeg WASM Transcoder & FastStart
+ * Ensures 100% genuine H.264 (libx264) + AAC MP4 with Moov atom at front, ready for Shopee Video and TikTok.
  */
 async function renderWithUniversalHardwareEngine(
   videoSourceUrl: string,
@@ -475,12 +475,22 @@ async function renderWithUniversalHardwareEngine(
           if (video && video.parentNode) document.body.removeChild(video);
         } catch {}
 
-        onProgress?.(96, 'กำลังจัดระเบียบหัวไฟล์ MP4 FastStart (Moov Atom at Start)...');
+        onProgress?.(90, 'กำลังตรวจสอบโครงสร้างไฟล์ MP4...');
 
         const rawBlob = new Blob(recordedChunks, { type: mimeType.split(';')[0] || 'video/mp4' });
-        const finalBlob = await fixMp4FastStartAndDuration(rawBlob, finalDuration);
-        const videoUrl = URL.createObjectURL(finalBlob);
+        let finalBlob: Blob;
 
+        // Check if rawBlob is already a pure ISO MP4 container
+        const isPureMp4 = await isPureMp4Container(rawBlob);
+        if (!isPureMp4 || mimeType.includes('webm')) {
+          onProgress?.(91, 'กำลังแปลงไฟล์ด้วย FFmpeg WASM (H.264 Main + AAC FastStart)...');
+          finalBlob = await transcodeToShopeeCompliantMp4(rawBlob, onProgress);
+        } else {
+          onProgress?.(96, 'กำลังจัดระเบียบหัวไฟล์ MP4 FastStart (Moov Atom at Start)...');
+          finalBlob = await fixMp4FastStartAndDuration(rawBlob, finalDuration);
+        }
+
+        const videoUrl = URL.createObjectURL(finalBlob);
         const assContent = generateAssSubtitles(wordTimings, subtitleSettings, canvasWidth, canvasHeight);
         const srtContent = generateSrtSubtitles(wordTimings);
 
@@ -509,7 +519,7 @@ async function renderWithUniversalHardwareEngine(
         if (!recorder || recorder.state !== 'recording' || !ctx || !video || !canvas) return;
 
         const elapsed = (performance.now() - startTime) / 1000;
-        const progress = Math.min(95, Math.round((elapsed / finalDuration) * 80) + 15);
+        const progress = Math.min(88, Math.round((elapsed / finalDuration) * 75) + 15);
         onProgress?.(
           progress,
           `กำลังเรนเดอร์ภาพและเสียงพากย์ (${Math.round(elapsed)}s / ${Math.round(finalDuration)}s)...`
@@ -685,6 +695,7 @@ export async function fixMp4FastStartAndDuration(blob: Blob, durationSeconds: nu
 /**
  * Draws crisp, natural Thai subtitles with contiguous script,
  * clean stroke outline, karaoke highlight, and accurate position coordinates.
+ * Strictly calculates active word highlight based on real-time speech timing + offset.
  */
 export function drawKaraokeSubtitles(
   ctx: CanvasRenderingContext2D,
@@ -696,15 +707,19 @@ export function drawKaraokeSubtitles(
 ) {
   if (!wordTimings || wordTimings.length === 0) return;
 
+  // Apply real-time subtitle sync offset compensation (in ms)
+  const offsetSeconds = (settings.syncOffsetMs || 0) / 1000;
+  const effectiveTime = currentTime + offsetSeconds;
+
   const tol = 0.08;
-  let activeIndex = wordTimings.findIndex((t) => currentTime >= t.start - tol && currentTime <= t.end + tol);
+  let activeIndex = wordTimings.findIndex((t) => effectiveTime >= t.start - tol && effectiveTime <= t.end + tol);
   let activePhrase = activeIndex >= 0 ? wordTimings[activeIndex] : undefined;
   if (!activePhrase) {
-    activeIndex = wordTimings.findIndex((t) => currentTime >= t.start - 0.15 && currentTime <= t.end + 0.2);
+    activeIndex = wordTimings.findIndex((t) => effectiveTime >= t.start - 0.15 && effectiveTime <= t.end + 0.2);
     activePhrase = activeIndex >= 0 ? wordTimings[activeIndex] : undefined;
   }
 
-  if (!activePhrase && currentTime < wordTimings[0].start && wordTimings[0].start < 1.0) {
+  if (!activePhrase && effectiveTime < wordTimings[0].start && wordTimings[0].start < 1.0) {
     activePhrase = wordTimings[0];
     activeIndex = 0;
   }
@@ -842,6 +857,7 @@ export function generateAssSubtitles(
   width: number,
   height: number
 ): string {
+  const offsetSeconds = (settings.syncOffsetMs || 0) / 1000;
   let marginV = 150;
   if (typeof settings.yPercent === 'number' && !isNaN(settings.yPercent)) {
     marginV = Math.round(height * (1 - Math.max(5, Math.min(95, settings.yPercent)) / 100));
@@ -880,8 +896,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const chunk = wordTimings.slice(i, i + CHUNK_SIZE);
     if (chunk.length === 0) continue;
 
-    const startTime = formatAssTime(chunk[0].start);
-    const endTime = formatAssTime(chunk[chunk.length - 1].end);
+    const startTime = formatAssTime(Math.max(0, chunk[0].start + offsetSeconds));
+    const endTime = formatAssTime(Math.max(0, chunk[chunk.length - 1].end + offsetSeconds));
 
     const isKaraokeMode = settings.styleMode !== 'standard';
     const textContent = isKaraokeMode

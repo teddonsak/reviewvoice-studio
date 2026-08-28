@@ -53,7 +53,8 @@ export const DEFAULT_SUBTITLE_SETTINGS: SubtitleSettings = {
   strokeWidth: 8,
   fontWeight: '800',
   fontFamily: 'Kanit',
-  showBadge: true
+  showBadge: true,
+  syncOffsetMs: 0
 };
 
 export function loadApiKeys(): ProviderApiKeys {

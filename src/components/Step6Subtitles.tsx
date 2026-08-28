@@ -173,10 +173,11 @@ export const Step6Subtitles: React.FC<Step6SubtitlesProps> = ({
     }
   };
 
-  // Live Canvas Subtitle Overlay Loop
+  // Live Canvas Subtitle Overlay Loop (Synchronized with Audio Clock)
   useEffect(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
+    const audio = audioRef.current;
     if (!canvas || !video) return;
 
     const ctx = canvas.getContext('2d');
@@ -200,8 +201,11 @@ export const Step6Subtitles: React.FC<Step6SubtitlesProps> = ({
         ctx.fillRect(0, 0, w, h);
       }
 
-      // Draw Karaoke Subtitles on top!
-      drawKaraokeSubtitles(ctx, video.currentTime, wordTimings, settings, w, h);
+      // Master clock: use audio.currentTime when audio is playing for 100% speech-accurate sync
+      const speechClock = (audio && !audio.paused ? audio.currentTime : video.currentTime);
+
+      // Draw Karaoke Subtitles with real-time speech sync & user offset
+      drawKaraokeSubtitles(ctx, speechClock, wordTimings, settings, w, h);
 
       if (isPlaying) {
         animFrameRef.current = requestAnimationFrame(render);
@@ -899,6 +903,72 @@ export const Step6Subtitles: React.FC<Step6SubtitlesProps> = ({
             </div>
             <p className="text-[11px] text-slate-400">
               *กล่องพื้นหลังสีดำโปร่งแสง ช่วยให้อ่านซับได้ชัดเจน 100% แม้ฉากในวิดีโอจะสว่างหรือมีลวดลาย
+            </p>
+          </div>
+
+          {/* Subtitle Audio Sync Delay Offset (+-500ms) */}
+          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                <Music className="w-4 h-4 text-cyan-400" />
+                ⚡ ปรับชดเชยดีเลย์เสียงพากย์ / ซับคาราโอเกะ (Audio Sync Delay Offset):
+              </span>
+              <span className="font-bold text-xs px-2.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/30 font-mono">
+                {settings.syncOffsetMs !== undefined && settings.syncOffsetMs !== 0
+                  ? `${settings.syncOffsetMs > 0 ? '+' : ''}${settings.syncOffsetMs} ms (${settings.syncOffsetMs > 0 ? 'ซับตามหลังเสียง' : 'ซับขึ้นก่อนเสียง'})`
+                  : '0 ms (มาตรฐานตรงเป๊ะ)'}
+              </span>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="grid grid-cols-5 gap-1.5 text-xs">
+              {[
+                { label: '-200 ms', val: -200, desc: 'ขึ้นก่อนมาก' },
+                { label: '-100 ms', val: -100, desc: 'ขึ้นก่อนนิด' },
+                { label: '0 ms', val: 0, desc: 'ค่ามาตรฐาน' },
+                { label: '+100 ms', val: 100, desc: 'ตามหลังนิด' },
+                { label: '+200 ms', val: 200, desc: 'ตามหลังมาก' },
+              ].map((item) => (
+                <button
+                  key={item.val}
+                  type="button"
+                  onClick={() => handleSettingChange('syncOffsetMs', item.val)}
+                  className={`p-2 rounded-lg border text-center transition-all ${
+                    (settings.syncOffsetMs || 0) === item.val
+                      ? 'bg-cyan-600/40 border-cyan-500 text-white font-bold ring-1 ring-cyan-500/40'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="text-xs font-mono">{item.label}</div>
+                  <div className="text-[9px] text-slate-400 truncate">{item.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Fine Slider */}
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>เลื่อนปรับละเอียด (-500ms ถึง +500ms):</span>
+                <button
+                  type="button"
+                  onClick={() => handleSettingChange('syncOffsetMs', 0)}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+                >
+                  รีเซ็ตเป็น 0ms
+                </button>
+              </div>
+              <input
+                type="range"
+                min="-500"
+                max="500"
+                step="25"
+                value={settings.syncOffsetMs || 0}
+                onChange={(e) => handleSettingChange('syncOffsetMs', parseInt(e.target.value, 10))}
+                className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+              />
+            </div>
+            <p className="text-[11px] text-slate-400">
+              *ช่วยชดเชยการประมวลผลของบราวเซอร์ ให้คำไฮไลต์คาราโอเกะสว่างขึ้นตรงกับเสี้ยววินาทีที่เสียงพากย์เปล่งเสียง 100%
             </p>
           </div>
 
