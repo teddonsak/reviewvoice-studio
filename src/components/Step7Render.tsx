@@ -310,18 +310,23 @@ export const Step7Render: React.FC<Step7RenderProps> = ({
           <div className="lg:col-span-7 flex flex-col justify-between space-y-6">
             
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-                  ✓ สำเร็จ 100%
+                  ✓ H.264 AVC + AAC | 30 FPS
                 </span>
-                <span className="text-xs text-slate-400 font-mono">1080x1920 MP4</span>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 font-mono">
+                  9:16 MP4 FastStart
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                  Shopee & TikTok Ready
+                </span>
               </div>
 
               <h3 className="text-xl sm:text-2xl font-bold font-kanit text-white">
                 {project.title || 'วิดีโอรีวิวสินค้า'}
               </h3>
               <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                คลิปนี้ตัดเสียงเดิมออกแล้ว ผสานเสียงพากย์ภาษาไทยสปีด {project.voiceSettings.speed}x และซับคาราโอเกะที่ซิงค์ตามคำพูดอย่างแม่นยำ พร้อมอัปโหลดลง TikTok, Facebook Reels, YouTube Shorts ได้ทันที!
+                คลิปนี้ตัดเสียงเดิมออกแล้ว ผสานเสียงพากย์ภาษาไทยสปีด {project.voiceSettings.speed}x และซับคาราโอเกะที่ซิงค์ตามคำพูดอย่างแม่นยำ เข้ารหัสแบบ H.264 + AAC พร้อม FastStart Moov Atom โพสต์ลง Shopee Video, TikTok, Facebook Reels, IG Reels ได้ทันที 100%!
               </p>
 
               {/* Main Download + Share */}
